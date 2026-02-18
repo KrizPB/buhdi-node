@@ -29,7 +29,7 @@ export class NodeConnection {
         'x-node-key': this.apiKey,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ system: systemInfo, software }),
+      body: JSON.stringify({ system_info: systemInfo, capabilities: software }),
     });
 
     if (!res.ok) {
@@ -38,8 +38,8 @@ export class NodeConnection {
     }
 
     const data = await res.json() as any;
-    this.nodeId = data.node_id;
-    this.nodeName = data.node_name || 'Unknown';
+    this.nodeId = data.data?.node_id || data.node_id;
+    this.nodeName = data.data?.node_name || data.node_name || 'Unknown';
   }
 
   startHeartbeat(): void {
@@ -86,7 +86,7 @@ export class NodeConnection {
     });
     if (!res.ok) return [];
     const data = await res.json() as any;
-    return data.tasks || [];
+    return data.data || data.tasks || [];
   }
 
   private async reportResult(taskId: string, result: any): Promise<void> {
