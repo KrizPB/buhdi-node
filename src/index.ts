@@ -94,7 +94,7 @@ async function main(): Promise<void> {
       process.exit(0);
     });
 
-    await connection.startPolling(executor);
+    await connection.startListening(executor);
     return;
   }
 
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
     process.exit(0);
   });
 
-  await connection.startPolling(executor);
+  await connection.startListening(executor);
 }
 
 main().catch((err) => {
