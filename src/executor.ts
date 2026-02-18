@@ -1,7 +1,9 @@
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import http from 'http';
+import https from 'https';
 import { detectSystem, detectSoftware } from './handshake';
 
 export interface Task {
@@ -16,6 +18,60 @@ export interface TaskResult {
   error?: string;
 }
 
+// --- Security: Dangerous command patterns ---
+const BLOCKED_SHELL_PATTERNS = [
+  /rm\s+(-rf?|--recursive)\s+[\/~]/i,
+  /del\s+\/[sfq]/i,                        // Windows del /s /f /q
+  /mkfs/i, /dd\s+if=/i, /format\s+[a-z]:/i,
+  /:(){ :|:& };:/,                          // fork bomb
+  />\s*\/dev\/sd/i,
+  /curl.*\|\s*(ba)?sh/i, /wget.*\|\s*(ba)?sh/i,
+  /powershell.*-enc/i,                      // encoded PS commands
+  /net\s+user/i, /reg\s+(add|delete)/i,
+  /shutdown/i, /reboot/i,
+  /taskkill\s+\/f/i,
+];
+
+// --- Security: Sensitive file paths ---
+const SENSITIVE_PATH_SEGMENTS = [
+  '.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker',
+  'AppData/Local/Google/Chrome', 'AppData/Local/Microsoft/Edge',
+  'AppData/Roaming/Mozilla/Firefox',
+  '.config/gcloud', '.password-store',
+  'id_rsa', 'id_ed25519', 'known_hosts',
+  'credentials', 'tokens.json',
+];
+
+// --- Security: SSRF protection ---
+const BLOCKED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '169.254.169.254', '[::1]', '::1'];
+const PRIVATE_IP_RE = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/;
+
+function isBlockedUrl(urlStr: string): string | null {
+  try {
+    const parsed = new URL(urlStr);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return 'Only HTTP/HTTPS URLs allowed';
+    }
+    if (BLOCKED_HOSTS.includes(parsed.hostname) || PRIVATE_IP_RE.test(parsed.hostname)) {
+      return 'Blocked: internal/private network URL';
+    }
+    return null;
+  } catch {
+    return 'Invalid URL';
+  }
+}
+
+function validateFilePath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  const normalized = resolved.replace(/\\/g, '/').toLowerCase();
+  for (const seg of SENSITIVE_PATH_SEGMENTS) {
+    if (normalized.includes(seg.toLowerCase())) {
+      throw new Error(`Access denied: path contains sensitive segment '${seg}'`);
+    }
+  }
+  return resolved;
+}
+
 export class TaskExecutor {
   async execute(task: Task): Promise<TaskResult> {
     const start = Date.now();
@@ -26,11 +82,10 @@ export class TaskExecutor {
           result = await this.execShell(task.payload.command, task.payload.cwd);
           break;
         case 'file_read':
-          result = await fs.readFile(task.payload.path, 'utf8');
+          result = await this.fileRead(task.payload.path);
           break;
         case 'file_write':
-          await fs.writeFile(task.payload.path, task.payload.content);
-          result = { written: task.payload.path };
+          result = await this.fileWrite(task.payload.path, task.payload.content);
           break;
         case 'system_info':
           result = { system: detectSystem(), software: detectSoftware() };
@@ -39,13 +94,24 @@ export class TaskExecutor {
           result = await this.openUrl(task.payload.url);
           break;
         case 'webcam':
+          console.log('⚠️  WEBCAM CAPTURE REQUESTED');
           result = await this.captureWebcam(task.payload);
           break;
         case 'build_webpage':
           result = await this.buildWebpage(task.payload);
           break;
         case 'screenshot':
+          console.log('⚠️  SCREENSHOT REQUESTED');
           result = await this.takeScreenshot();
+          break;
+        case 'web_search':
+          result = await this.webSearch(task.payload.query, task.payload.count);
+          break;
+        case 'web_fetch':
+          result = await this.webFetch(task.payload.url, task.payload.maxChars);
+          break;
+        case 'status_ping':
+          result = await this.statusPing(task.payload);
           break;
         default:
           throw new Error(`Unknown task type: ${task.type}`);
@@ -60,21 +126,55 @@ export class TaskExecutor {
   }
 
   private execShell(command: string, cwd?: string): Promise<string> {
+    // Security: block dangerous patterns
+    for (const pat of BLOCKED_SHELL_PATTERNS) {
+      if (pat.test(command)) {
+        return Promise.reject(new Error(`Blocked dangerous command pattern: ${command.slice(0, 80)}`));
+      }
+    }
+    // Security: block attempts to exfiltrate env vars
+    if (/\b(BRAVE_API_KEY|BUHDI_API_KEY|API_KEY|SECRET|TOKEN|PASSWORD)\b/i.test(command) &&
+        /(echo|print|cat|type|set|env|Get-ChildItem\s+env)/i.test(command)) {
+      return Promise.reject(new Error('Blocked: potential credential exfiltration'));
+    }
+
+    console.log(`🔧 Shell: ${command.slice(0, 120)}${command.length > 120 ? '...' : ''}`);
     return new Promise((resolve, reject) => {
-      exec(command, { cwd, timeout: 30000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      exec(command, { cwd, timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
         if (err) reject(new Error(stderr || err.message));
         else resolve(stdout);
       });
     });
   }
 
+  // --- Secured file operations ---
+  private async fileRead(filePath: string): Promise<string> {
+    const safe = validateFilePath(filePath);
+    console.log(`📄 Reading: ${safe}`);
+    return await fs.readFile(safe, 'utf8');
+  }
+
+  private async fileWrite(filePath: string, content: string): Promise<any> {
+    const safe = validateFilePath(filePath);
+    console.log(`📝 Writing: ${safe}`);
+    await fs.writeFile(safe, content);
+    return { written: safe };
+  }
+
+  // --- Secured URL opening (no shell injection) ---
   private async openUrl(url: string): Promise<string> {
+    const blocked = isBlockedUrl(url);
+    if (blocked) throw new Error(blocked);
+
     const platform = os.platform();
-    let cmd: string;
-    if (platform === 'win32') cmd = `start "" "${url}"`;
-    else if (platform === 'darwin') cmd = `open "${url}"`;
-    else cmd = `xdg-open "${url}"`;
-    await this.execShell(cmd);
+    console.log(`🌐 Opening: ${url}`);
+    if (platform === 'win32') {
+      spawn('cmd', ['/c', 'start', '', url], { shell: false, detached: true, stdio: 'ignore', windowsHide: true });
+    } else if (platform === 'darwin') {
+      spawn('open', [url], { detached: true, stdio: 'ignore' });
+    } else {
+      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+    }
     return `Opened ${url} in default browser`;
   }
 
@@ -85,20 +185,13 @@ export class TaskExecutor {
     const platform = os.platform();
 
     if (platform === 'win32') {
-      // Try ffmpeg first (most reliable)
       try {
         await this.execShell(
           `ffmpeg -f dshow -i video="Integrated Camera" -frames:v 1 -y "${outFile}" 2>&1`,
           undefined
         );
       } catch {
-        // Try with generic device name
         try {
-          await this.execShell(
-            `ffmpeg -list_devices true -f dshow -i dummy 2>&1 || true`,
-            undefined
-          );
-          // List devices and try first video device
           const devices = await this.execShell(
             `powershell -c "Get-PnpDevice -Class Camera -Status OK | Select-Object -ExpandProperty FriendlyName"`,
             undefined
@@ -113,25 +206,21 @@ export class TaskExecutor {
             throw new Error('No camera device found');
           }
         } catch (e: any) {
-          throw new Error(`Webcam capture failed. Ensure ffmpeg is installed and a camera is connected. ${e.message}`);
+          throw new Error(`Webcam capture failed. Ensure ffmpeg is installed. ${e.message}`);
         }
       }
     } else if (platform === 'darwin') {
-      // macOS: use ffmpeg with avfoundation
       await this.execShell(
         `ffmpeg -f avfoundation -framerate 30 -i "0" -frames:v 1 -y "${outFile}" 2>&1`
       );
     } else {
-      // Linux: use ffmpeg with v4l2
       await this.execShell(
         `ffmpeg -f v4l2 -i /dev/video0 -frames:v 1 -y "${outFile}" 2>&1`
       );
     }
 
-    // Read the file and return base64
     const data = await fs.readFile(outFile);
     const base64 = data.toString('base64');
-    // Clean up
     await fs.unlink(outFile).catch(() => {});
     return { 
       image: `data:image/jpeg;base64,${base64}`,
@@ -143,18 +232,18 @@ export class TaskExecutor {
   private async buildWebpage(payload: any): Promise<any> {
     const { html, title, filename } = payload;
     const outDir = path.join(os.homedir(), 'Desktop');
-    const fname = (filename || `${(title || 'page').replace(/[^a-zA-Z0-9]/g, '_')}.html`);
-    const outFile = path.join(outDir, fname);
+    // Security: sanitize filename — strip path separators and dangerous chars
+    const rawName = (filename || `${(title || 'page').replace(/[^a-zA-Z0-9]/g, '_')}.html`);
+    const safeName = path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const outFile = path.join(outDir, safeName);
 
-    // Write the HTML file
+    console.log(`🏗️ Building webpage: ${outFile}`);
     await fs.writeFile(outFile, html, 'utf8');
-
-    // Open in default browser
     await this.openUrl(outFile);
 
     return {
       path: outFile,
-      message: `Webpage "${title || fname}" created and opened in browser`
+      message: `Webpage "${title || safeName}" created and opened in browser`
     };
   }
 
@@ -165,7 +254,6 @@ export class TaskExecutor {
     const platform = os.platform();
 
     if (platform === 'win32') {
-      // PowerShell screenshot
       const psScript = `
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -192,5 +280,89 @@ $bitmap.Dispose()
       size: data.length,
       message: 'Screenshot captured successfully'
     };
+  }
+
+  private async statusPing(payload: any): Promise<any> {
+    const uptime = os.uptime();
+    const loadavg = os.loadavg();
+    const freeMem = os.freemem();
+    const totalMem = os.totalmem();
+    return {
+      pong: true,
+      agent_task_id: payload?.agent_task_id,
+      timestamp: new Date().toISOString(),
+      system: {
+        uptime_hours: Math.round(uptime / 3600 * 10) / 10,
+        load_avg: loadavg,
+        memory_used_pct: Math.round((1 - freeMem / totalMem) * 100),
+        free_mem_mb: Math.round(freeMem / 1024 / 1024),
+      },
+      message: 'Node is alive and processing',
+    };
+  }
+
+  // --- Secured HTTP client with redirect limits and SSRF protection ---
+  private httpGet(url: string, headers?: Record<string, string>, maxRedirects: number = 5): Promise<{ status: number; body: string }> {
+    const blocked = isBlockedUrl(url);
+    if (blocked) return Promise.reject(new Error(blocked));
+    if (maxRedirects <= 0) return Promise.reject(new Error('Too many redirects'));
+
+    return new Promise((resolve, reject) => {
+      const mod = url.startsWith('https') ? https : http;
+      const req = mod.get(url, { headers: headers || {} }, (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return this.httpGet(res.headers.location, headers, maxRedirects - 1).then(resolve).catch(reject);
+        }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => body += chunk);
+        res.on('end', () => resolve({ status: res.statusCode || 200, body }));
+      });
+      req.on('error', reject);
+      req.setTimeout(15000, () => { req.destroy(); reject(new Error('Request timeout')); });
+    });
+  }
+
+  private async webSearch(query: string, count?: number): Promise<any> {
+    const numResults = Math.min(count || 5, 10);
+    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${numResults}`;
+    const apiKey = process.env.BRAVE_API_KEY;
+    if (!apiKey) throw new Error('BRAVE_API_KEY not set. Export it before running buhdi-node.');
+
+    const { body } = await this.httpGet(url, {
+      'Accept': 'application/json',
+      'X-Subscription-Token': apiKey
+    });
+
+    const data = JSON.parse(body);
+    const results = (data.web?.results || []).map((r: any) => ({
+      title: r.title,
+      url: r.url,
+      description: r.description
+    }));
+    return { query, results, total: results.length };
+  }
+
+  private async webFetch(url: string, maxChars?: number): Promise<any> {
+    const limit = maxChars || 50000;
+    const { status, body } = await this.httpGet(url, {
+      'User-Agent': 'BuhdiNode/0.1'
+    });
+
+    let text = body
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (text.length > limit) text = text.substring(0, limit) + '... [truncated]';
+
+    return { url, status, length: text.length, content: text };
   }
 }

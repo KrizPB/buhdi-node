@@ -3,9 +3,8 @@ import WebSocket from 'ws';
 
 const BASE_URL = 'https://www.mybuhdi.com';
 const WS_URL = 'wss://buhdi-ws.fly.dev/ws';
-const POLL_INTERVAL = 3000;
+const POLL_INTERVAL = 5000;
 const HEARTBEAT_INTERVAL = 30000;
-const MAX_WS_FAILURES = 3;
 const MAX_RECONNECT_DELAY = 60000;
 
 function sleep(ms: number): Promise<void> {
@@ -19,11 +18,12 @@ export class NodeConnection {
   private running = false;
   private ws: WebSocket | null = null;
   private wsConnected = false;
-  private wsFailures = 0;
   private reconnectDelay = 1000;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private executor: TaskExecutor | null = null;
+  private polling = false;
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
@@ -69,69 +69,72 @@ export class NodeConnection {
     }, HEARTBEAT_INTERVAL);
   }
 
-  /** Start listening for tasks — tries WebSocket first, falls back to polling */
+  /** Start listening — WebSocket primary, polling fallback on disconnect */
   async startListening(executor: TaskExecutor): Promise<void> {
     this.executor = executor;
     this.running = true;
 
-    if (this.wsFailures < MAX_WS_FAILURES) {
-      this.connectWebSocket();
-      // Wait a bit to see if WS connects, then fall through to polling if not
-      await sleep(5000);
-      if (this.wsConnected) {
-        console.log('📡 Receiving tasks via WebSocket (HTTP polling disabled)');
-        // Keep running — tasks come via WS callbacks
-        // Just block until stopped
-        while (this.running) {
-          await sleep(1000);
-        }
-        return;
+    // Always try WebSocket first
+    this.connectWebSocket();
+
+    // Block until stopped
+    while (this.running) {
+      await sleep(1000);
+    }
+  }
+
+  /** Start polling as fallback when WS is down */
+  private startPolling(): void {
+    if (this.polling || !this.running) return;
+    this.polling = true;
+    console.log('🔄 Polling for tasks (WebSocket offline)...');
+    this.pollLoop();
+  }
+
+  private stopPolling(): void {
+    this.polling = false;
+    if (this.pollTimer) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  private async pollLoop(): Promise<void> {
+    if (!this.polling || !this.running || !this.executor) return;
+
+    try {
+      const tasks = await this.fetchTasks();
+      for (const task of tasks) {
+        console.log(`🔧 Task: [${task.type}] ${task.payload?.command || task.payload?.path || ''}`);
+        const result = await this.executor.execute(task);
+        await this.reportResult(task.id, result);
+      }
+    } catch (err: any) {
+      if (!err?.message?.includes('fetch')) {
+        console.error('⚠️  Poll error:', err?.message || err);
       }
     }
 
-    // Fallback to polling
-    console.log('🔄 Falling back to HTTP polling...');
-    await this.startPolling(executor);
-  }
-
-  /** Legacy HTTP polling — kept as fallback */
-  async startPolling(executor: TaskExecutor): Promise<void> {
-    this.running = true;
-    console.log('🔄 Polling for tasks...');
-
-    while (this.running) {
-      try {
-        const tasks = await this.fetchTasks();
-        for (const task of tasks) {
-          console.log(`🔧 Task: [${task.type}] ${task.payload?.command || task.payload?.path || ''}`);
-          const result = await executor.execute(task);
-          await this.reportResult(task.id, result);
-        }
-      } catch (err: any) {
-        if (err?.message?.includes('fetch')) {
-          // Network error — silent retry
-        } else {
-          console.error('⚠️  Poll error:', err?.message || err);
-        }
-      }
-      await sleep(POLL_INTERVAL);
+    // Schedule next poll
+    if (this.polling && this.running) {
+      this.pollTimer = setTimeout(() => this.pollLoop(), POLL_INTERVAL);
     }
   }
 
   private connectWebSocket(): void {
-    const url = `${WS_URL}?key=${this.apiKey}`;
     console.log('🔌 Connecting via WebSocket...');
 
     try {
-      this.ws = new WebSocket(url);
+      this.ws = new WebSocket(WS_URL);
     } catch (err: any) {
       console.error('❌ WebSocket creation failed:', err.message);
-      this.handleWsFailure();
+      this.startPolling();
+      this.scheduleReconnect();
       return;
     }
 
     this.ws.on('open', () => {
-      // Wait for welcome message to confirm connection
+      this.wsSend({ type: 'auth', key: this.apiKey });
     });
 
     this.ws.on('message', (raw: WebSocket.Data) => {
@@ -143,7 +146,7 @@ export class NodeConnection {
       }
     });
 
-    this.ws.on('close', (code: number, reason: Buffer) => {
+    this.ws.on('close', (code: number) => {
       const wasConnected = this.wsConnected;
       this.wsConnected = false;
       this.stopWsHeartbeat();
@@ -153,12 +156,14 @@ export class NodeConnection {
       }
 
       if (this.running) {
+        // Start polling immediately as fallback
+        this.startPolling();
+        // Try to reconnect WS in background
         this.scheduleReconnect();
       }
     });
 
     this.ws.on('error', (err: Error) => {
-      // Error is followed by close, so just log
       console.error('⚠️  WebSocket error:', err.message);
     });
   }
@@ -167,12 +172,16 @@ export class NodeConnection {
     switch (msg.type) {
       case 'welcome':
         this.wsConnected = true;
-        this.wsFailures = 0;
         this.reconnectDelay = 1000;
         this.nodeName = msg.nodeName || this.nodeName;
         this.nodeId = msg.nodeId || this.nodeId;
         console.log(`✅ WebSocket connected as "${this.nodeName}"`);
         this.startWsHeartbeat();
+        // Stop polling — WS is handling tasks now
+        if (this.polling) {
+          console.log('📡 WebSocket restored — polling disabled');
+          this.stopPolling();
+        }
         break;
 
       case 'ping':
@@ -184,7 +193,6 @@ export class NodeConnection {
         break;
 
       default:
-        // Ignore unknown messages
         break;
     }
   }
@@ -195,9 +203,12 @@ export class NodeConnection {
     try {
       const result = await this.executor.execute(task);
       this.wsSend({ type: 'result', taskId: task.id, result });
+      await this.reportResult(task.id, result).catch(() => {});
     } catch (err: any) {
       console.error(`❌ Task ${task.id} failed:`, err.message);
-      this.wsSend({ type: 'result', taskId: task.id, result: { status: 'error', error: err.message } });
+      const failResult = { status: 'failed' as const, error: err.message };
+      this.wsSend({ type: 'result', taskId: task.id, result: failResult });
+      await this.reportResult(task.id, failResult).catch(() => {});
     }
   }
 
@@ -221,23 +232,13 @@ export class NodeConnection {
     }
   }
 
-  private handleWsFailure(): void {
-    this.wsFailures++;
-    if (this.wsFailures >= MAX_WS_FAILURES) {
-      console.log(`⚠️  WebSocket failed ${this.wsFailures} times, falling back to HTTP polling`);
-    }
-  }
-
   private scheduleReconnect(): void {
-    this.handleWsFailure();
-    if (this.wsFailures >= MAX_WS_FAILURES) return; // Let startListening fall through to polling
-
     const jitter = Math.random() * 1000;
     const delay = Math.min(this.reconnectDelay + jitter, MAX_RECONNECT_DELAY);
-    console.log(`🔄 Reconnecting in ${Math.round(delay / 1000)}s...`);
+    console.log(`🔄 WebSocket reconnect in ${Math.round(delay / 1000)}s...`);
 
     setTimeout(() => {
-      if (this.running) {
+      if (this.running && !this.wsConnected) {
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY);
         this.connectWebSocket();
       }
@@ -246,6 +247,7 @@ export class NodeConnection {
 
   stop(): void {
     this.running = false;
+    this.stopPolling();
     this.stopWsHeartbeat();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);

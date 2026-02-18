@@ -19,6 +19,6 @@ export function loadConfig(): BuhdiConfig {
 }
 
 export function saveConfig(config: BuhdiConfig): void {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
 }
