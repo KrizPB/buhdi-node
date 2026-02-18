@@ -13,7 +13,8 @@ function printUsage(): void {
 
 Usage:
   buhdi-node connect <API_KEY>    Connect to mybuhdi.com
-  buhdi-node --key <API_KEY>      Same as above
+  buhdi-node reconnect <TOKEN>    Reconnect using a dashboard token
+  buhdi-node --key <API_KEY>      Same as connect
   buhdi-node status               Show system info
   buhdi-node --help               Show this help
 
@@ -34,6 +35,67 @@ async function main(): Promise<void> {
   if (args.includes('--help') || args.includes('-h') || args.length === 0) {
     printUsage();
     process.exit(0);
+  }
+
+  if (args[0] === 'reconnect' && args[1]) {
+    const token = args[1].toUpperCase();
+    console.log(`🐻 Buhdi Node v${VERSION}`);
+    console.log(`🔄 Reconnecting with token: ${token}\n`);
+
+    // Load saved config for API key
+    const config = loadConfig();
+    if (!config.apiKey) {
+      console.error('❌ No saved API key. Run "buhdi-node connect <API_KEY>" first.');
+      process.exit(1);
+    }
+
+    // Validate the reconnect token
+    try {
+      const res = await fetch('https://www.mybuhdi.com/api/node/reconnect/validate', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ token }),
+      });
+      const data = await res.json() as any;
+      if (!res.ok || !data.data?.valid) {
+        console.error(`❌ Token invalid or expired: ${data.error || 'unknown error'}`);
+        process.exit(1);
+      }
+      console.log('✅ Token validated! Reconnecting...\n');
+    } catch (err: any) {
+      console.error(`❌ Failed to validate token: ${err.message}`);
+      process.exit(1);
+    }
+
+    // Now do normal connect flow
+    const systemInfo = detectSystem();
+    const software = detectSoftware();
+    printSystemInfo(systemInfo);
+    console.log('');
+
+    const connection = new NodeConnection(config.apiKey);
+    try {
+      await connection.connect(systemInfo, software);
+      console.log(`✅ Reconnected as "${connection.name}"\n`);
+    } catch (err: any) {
+      console.error(`❌ Reconnect failed: ${err.message}`);
+      process.exit(1);
+    }
+
+    connection.startHeartbeat();
+    const executor = new TaskExecutor();
+
+    process.on('SIGINT', () => {
+      console.log('\n👋 Disconnecting...');
+      connection.stop();
+      process.exit(0);
+    });
+
+    await connection.startPolling(executor);
+    return;
   }
 
   if (args[0] === 'status') {
