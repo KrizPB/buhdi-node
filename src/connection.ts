@@ -69,8 +69,12 @@ export class NodeConnection {
           const result = await executor.execute(task);
           await this.reportResult(task.id, result);
         }
-      } catch {
-        // Connection error — retry silently
+      } catch (err: any) {
+        if (err?.message?.includes('fetch')) {
+          // Network error — silent retry
+        } else {
+          console.error('⚠️  Poll error:', err?.message || err);
+        }
       }
       await sleep(POLL_INTERVAL);
     }
