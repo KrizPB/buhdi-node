@@ -1,6 +1,6 @@
 import { TaskExecutor, Task } from './executor';
 import WebSocket from 'ws';
-import { ensureKeypair, getPublicKey } from './vault';
+import { ensureKeypair, getPublicKey, syncVaultForNewNodes } from './vault';
 
 const BASE_URL = 'https://www.mybuhdi.com';
 const WS_URL = 'wss://buhdi-ws.fly.dev/ws';
@@ -66,6 +66,14 @@ export class NodeConnection {
         body: JSON.stringify({ public_key: publicKey, algorithm: 'RSA-OAEP-4096' }),
       });
       console.log('🔐 Vault public key uploaded');
+
+      // Check for pending vault sync (re-encrypt secrets for new nodes)
+      try {
+        const synced = await syncVaultForNewNodes(this.apiKey, BASE_URL);
+        if (synced > 0) console.log(`🔄 Synced ${synced} vault key(s) for other nodes`);
+      } catch (err: any) {
+        console.warn('⚠️  Vault sync check failed:', err.message);
+      }
     } catch (err: any) {
       console.warn('⚠️  Vault key upload failed:', err.message);
     }

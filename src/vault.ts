@@ -199,6 +199,20 @@ export async function decryptWithPrivateKey(encryptedAESKeyBase64: string): Prom
   );
 }
 
+/** Encrypt (wrap) an AES key with someone else's RSA public key */
+export function encryptWithPublicKey(aesKeyRaw: Buffer, publicKeyPem: string): string {
+  const publicKey = crypto.createPublicKey(publicKeyPem);
+  const encrypted = crypto.publicEncrypt(
+    {
+      key: publicKey,
+      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+      oaepHash: 'sha256',
+    },
+    aesKeyRaw
+  );
+  return encrypted.toString('base64');
+}
+
 /** Decrypt a vault secret: unwrap AES key with RSA, then decrypt value with AES-GCM */
 export async function decryptVaultSecret(
   encryptedValue: string,
@@ -223,4 +237,87 @@ export async function decryptVaultSecret(
   ]);
   
   return decrypted.toString('utf8');
+}
+
+/**
+ * Sync vault secrets for new nodes.
+ * This node decrypts secrets with its private key, then re-encrypts
+ * the AES keys with each target node's public key.
+ * The cloud NEVER sees plaintext.
+ */
+export async function syncVaultForNewNodes(apiKey: string, baseUrl: string): Promise<number> {
+  // 1. Check what needs syncing
+  const res = await fetch(`${baseUrl}/api/node/vault/sync-needed`, {
+    headers: { 'x-node-key': apiKey },
+  });
+  
+  if (!res.ok) {
+    console.warn('⚠️  Vault sync check failed:', res.status);
+    return 0;
+  }
+
+  const { entries_to_reencrypt, target_nodes } = await res.json() as any;
+  
+  if (!entries_to_reencrypt || entries_to_reencrypt.length === 0) {
+    return 0;
+  }
+
+  console.log(`🔄 Vault sync: ${entries_to_reencrypt.length} entries need re-encryption for ${target_nodes.length} node(s)`);
+
+  // Build a map of target node public keys (as PEM)
+  const nodeKeyMap = new Map<string, string>();
+  for (const tn of target_nodes) {
+    // Convert raw base64 to PEM if needed
+    let pem = tn.public_key;
+    if (!pem.includes('-----BEGIN')) {
+      pem = `-----BEGIN PUBLIC KEY-----\n${pem}\n-----END PUBLIC KEY-----`;
+    }
+    nodeKeyMap.set(tn.node_id, pem);
+  }
+
+  // 2. For each entry, decrypt AES key, re-encrypt for missing nodes
+  const keysToUpload: Array<{ entry_id: string; node_id: string; wrapped_key: string }> = [];
+
+  for (const entry of entries_to_reencrypt) {
+    try {
+      // Decrypt the AES key with our private key
+      const aesKeyRaw = await decryptWithPrivateKey(entry.node_encrypted_key);
+
+      // Re-encrypt for each missing node
+      for (const targetNodeId of entry.missing_node_ids) {
+        const targetPem = nodeKeyMap.get(targetNodeId);
+        if (!targetPem) continue;
+
+        const wrappedKey = encryptWithPublicKey(aesKeyRaw, targetPem);
+        keysToUpload.push({
+          entry_id: entry.id,
+          node_id: targetNodeId,
+          wrapped_key: wrappedKey,
+        });
+      }
+    } catch (err: any) {
+      console.warn(`⚠️  Failed to re-encrypt entry "${entry.name}":`, err.message);
+    }
+  }
+
+  if (keysToUpload.length === 0) return 0;
+
+  // 3. Upload re-encrypted keys
+  const uploadRes = await fetch(`${baseUrl}/api/node/vault/sync-keys`, {
+    method: 'POST',
+    headers: {
+      'x-node-key': apiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ keys: keysToUpload }),
+  });
+
+  if (!uploadRes.ok) {
+    console.warn('⚠️  Vault sync upload failed:', uploadRes.status);
+    return 0;
+  }
+
+  const result = await uploadRes.json() as any;
+  console.log(`✅ Vault sync complete: ${result.updated} keys synced`);
+  return result.updated || 0;
 }
