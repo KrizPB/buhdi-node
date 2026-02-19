@@ -228,6 +228,17 @@ export class NodeConnection {
 
   private async handleWsTask(task: Task): Promise<void> {
     if (!this.executor || !task) return;
+
+    // Handle tasks awaiting approval
+    if ((task as any).status === 'awaiting_approval' || (task as any).approval_id) {
+      const approvalId = (task as any).approval_id;
+      console.log(`🔐 Task awaiting approval: [${task.type}] ${task.payload?.command || ''}`);
+      if (approvalId) {
+        this.waitForApproval(task, approvalId);
+      }
+      return;
+    }
+
     console.log(`🔧 Task: [${task.type}] ${task.payload?.command || task.payload?.path || ''}`);
     try {
       const result = await this.executor.execute(task);
@@ -239,6 +250,58 @@ export class NodeConnection {
       this.wsSend({ type: 'result', taskId: task.id, result: failResult });
       await this.reportResult(task.id, failResult).catch(() => {});
     }
+  }
+
+  private async waitForApproval(task: Task, approvalId: string): Promise<void> {
+    const POLL_MS = 5000;
+    const TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+    const start = Date.now();
+
+    const poll = async () => {
+      if (!this.running) return;
+      if (Date.now() - start > TIMEOUT_MS) {
+        console.log(`⏰ Task ${task.id} approval expired (30min timeout)`);
+        await this.reportResult(task.id, { status: 'failed', error: 'Approval timed out' }).catch(() => {});
+        return;
+      }
+
+      try {
+        const res = await fetch(`${BASE_URL}/api/node/tasks/${task.id}/status`, {
+          headers: { 'x-node-key': this.apiKey },
+        });
+        if (!res.ok) {
+          setTimeout(poll, POLL_MS);
+          return;
+        }
+        const data = await res.json() as any;
+        const status = data.data?.status || data.status;
+
+        if (status === 'pending' || status === 'dispatched') {
+          // Approved! Execute the task
+          console.log(`✅ Task ${task.id} approved — executing`);
+          try {
+            const result = await this.executor!.execute(task);
+            this.wsSend({ type: 'result', taskId: task.id, result });
+            await this.reportResult(task.id, result).catch(() => {});
+          } catch (err: any) {
+            const failResult = { status: 'failed' as const, error: err.message };
+            this.wsSend({ type: 'result', taskId: task.id, result: failResult });
+            await this.reportResult(task.id, failResult).catch(() => {});
+          }
+        } else if (status === 'failed') {
+          console.log(`🚫 Task ${task.id} denied by user`);
+        } else if (status === 'awaiting_approval') {
+          setTimeout(poll, POLL_MS);
+        } else {
+          // Unknown status, stop polling
+          console.log(`❓ Task ${task.id} status: ${status}`);
+        }
+      } catch {
+        setTimeout(poll, POLL_MS);
+      }
+    };
+
+    poll();
   }
 
   private wsSend(data: any): void {
