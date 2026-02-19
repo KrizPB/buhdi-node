@@ -1,6 +1,13 @@
 /**
  * Vault — RSA-4096 keypair management for buhdi-node
- * Private key stored encrypted at ~/.buhdi/vault-key.pem
+ * Private key stored encrypted at ~/.buhdi/vault-key.enc
+ *
+ * Security model:
+ * - Random 32-byte salt per install (stored at ~/.buhdi/vault-salt)
+ * - Random 32-byte machine secret per install (stored at ~/.buhdi/machine-secret, chmod 600)
+ * - PBKDF2 with 600K iterations derives AES-256-GCM key from machine-secret + salt
+ * - Private key encrypted at rest, cached in memory with 5-minute auto-clear
+ * - All vault files written with mode 0o600 (owner read/write only)
  */
 
 import crypto from 'crypto';
@@ -11,20 +18,65 @@ import os from 'os';
 const VAULT_DIR = path.join(os.homedir(), '.buhdi');
 const KEY_FILE = path.join(VAULT_DIR, 'vault-key.enc');
 const PUBKEY_FILE = path.join(VAULT_DIR, 'vault-pub.pem');
+const SALT_FILE = path.join(VAULT_DIR, 'vault-salt');
+const SECRET_FILE = path.join(VAULT_DIR, 'machine-secret');
+
+const PBKDF2_ITERATIONS = 600_000; // INFO-1: Raised from 100K to 600K for consistency
+const CACHE_TTL_MS = 5 * 60 * 1000; // HIGH-2: 5-minute cache timeout
 
 let cachedPrivateKey: crypto.KeyObject | null = null;
 let cachedPublicKeyPem: string | null = null;
+let cacheTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Derive an encryption key from machine-specific info */
-function deriveMachineKey(): Buffer {
-  const machineId = `${os.hostname()}:${os.platform()}:${os.arch()}:${os.userInfo().username}`;
-  const salt = 'buhdi-vault-v1';
-  return crypto.pbkdf2Sync(machineId, salt, 100000, 32, 'sha256');
+/** Reset the cache expiry timer. Called on every private key access. */
+function touchCache(): void {
+  if (cacheTimer) clearTimeout(cacheTimer);
+  cacheTimer = setTimeout(() => {
+    cachedPrivateKey = null;
+    cacheTimer = null;
+    console.log('🔐 Private key cache cleared (5-minute timeout)');
+  }, CACHE_TTL_MS);
+}
+
+/** Write a file with restricted permissions (owner read/write only) */
+async function writeSecure(filePath: string, data: Buffer | string): Promise<void> {
+  const opts = typeof data === 'string'
+    ? { encoding: 'utf8' as const, mode: 0o600 }
+    : { mode: 0o600 };
+  await fs.writeFile(filePath, data, opts);
+}
+
+/** Get or create the random salt for this install */
+async function getSalt(): Promise<Buffer> {
+  try {
+    return await fs.readFile(SALT_FILE);
+  } catch {
+    const salt = crypto.randomBytes(32);
+    await writeSecure(SALT_FILE, salt);
+    return salt;
+  }
+}
+
+/** Get or create the random machine secret for this install */
+async function getMachineSecret(): Promise<Buffer> {
+  try {
+    return await fs.readFile(SECRET_FILE);
+  } catch {
+    const secret = crypto.randomBytes(32);
+    await writeSecure(SECRET_FILE, secret);
+    return secret;
+  }
+}
+
+/** Derive an encryption key from machine-secret + random salt */
+async function deriveMachineKey(): Promise<Buffer> {
+  const [secret, salt] = await Promise.all([getMachineSecret(), getSalt()]);
+  return crypto.pbkdf2Sync(secret, salt, PBKDF2_ITERATIONS, 32, 'sha256');
 }
 
 /** Encrypt data with machine-derived key */
-function encryptWithMachineKey(data: string): Buffer {
-  const key = deriveMachineKey();
+async function encryptWithMachineKey(data: string): Promise<Buffer> {
+  const key = await deriveMachineKey();
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const encrypted = Buffer.concat([cipher.update(data, 'utf8'), cipher.final()]);
@@ -34,8 +86,8 @@ function encryptWithMachineKey(data: string): Buffer {
 }
 
 /** Decrypt data with machine-derived key */
-function decryptWithMachineKey(data: Buffer): string {
-  const key = deriveMachineKey();
+async function decryptWithMachineKey(data: Buffer): Promise<string> {
+  const key = await deriveMachineKey();
   const iv = data.subarray(0, 16);
   const tag = data.subarray(16, 32);
   const ciphertext = data.subarray(32);
@@ -54,18 +106,23 @@ async function generateKeypair(): Promise<void> {
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
   });
 
-  await fs.mkdir(VAULT_DIR, { recursive: true });
+  await fs.mkdir(VAULT_DIR, { recursive: true, mode: 0o700 });
 
-  // Store private key encrypted
-  const encryptedPrivate = encryptWithMachineKey(privateKey as string);
-  await fs.writeFile(KEY_FILE, encryptedPrivate);
+  // Ensure salt and machine secret exist before encrypting
+  await getSalt();
+  await getMachineSecret();
+
+  // Store private key encrypted (HIGH-1: mode 0o600)
+  const encryptedPrivate = await encryptWithMachineKey(privateKey as string);
+  await writeSecure(KEY_FILE, encryptedPrivate);
   
-  // Store public key as PEM (not sensitive)
-  await fs.writeFile(PUBKEY_FILE, publicKey as string);
+  // Store public key as PEM (not sensitive, but still restricted)
+  await writeSecure(PUBKEY_FILE, publicKey as string);
 
   // Cache in memory
   cachedPrivateKey = crypto.createPrivateKey(privateKey as string);
   cachedPublicKeyPem = publicKey as string;
+  touchCache();
 
   console.log('✅ RSA keypair generated and stored');
 }
@@ -78,9 +135,10 @@ async function loadKeypair(): Promise<boolean> {
       fs.readFile(PUBKEY_FILE, 'utf8'),
     ]);
     
-    const privatePem = decryptWithMachineKey(encPrivate);
+    const privatePem = await decryptWithMachineKey(encPrivate);
     cachedPrivateKey = crypto.createPrivateKey(privatePem);
     cachedPublicKeyPem = pubPem;
+    touchCache();
     return true;
   } catch {
     return false;
@@ -89,12 +147,25 @@ async function loadKeypair(): Promise<boolean> {
 
 /** Ensure keypair exists — generate if not */
 export async function ensureKeypair(): Promise<void> {
-  if (cachedPrivateKey && cachedPublicKeyPem) return;
+  if (cachedPrivateKey && cachedPublicKeyPem) {
+    touchCache();
+    return;
+  }
   
   const loaded = await loadKeypair();
   if (!loaded) {
     await generateKeypair();
   }
+}
+
+/** Get the private key, re-loading from disk if cache expired */
+async function getPrivateKey(): Promise<crypto.KeyObject> {
+  if (!cachedPrivateKey) {
+    const loaded = await loadKeypair();
+    if (!loaded) throw new Error('Keypair not initialized. Call ensureKeypair() first.');
+  }
+  touchCache();
+  return cachedPrivateKey!;
 }
 
 /** Get the public key as base64-encoded DER (for sending to cloud) */
@@ -114,13 +185,13 @@ export function getPublicKeyPem(): string {
 }
 
 /** Decrypt an RSA-OAEP wrapped AES key */
-export function decryptWithPrivateKey(encryptedAESKeyBase64: string): Buffer {
-  if (!cachedPrivateKey) throw new Error('Keypair not initialized');
+export async function decryptWithPrivateKey(encryptedAESKeyBase64: string): Promise<Buffer> {
+  const privateKey = await getPrivateKey();
   
   const encryptedBuffer = Buffer.from(encryptedAESKeyBase64, 'base64');
   return crypto.privateDecrypt(
     {
-      key: cachedPrivateKey,
+      key: privateKey,
       padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
       oaepHash: 'sha256',
     },
@@ -129,14 +200,14 @@ export function decryptWithPrivateKey(encryptedAESKeyBase64: string): Buffer {
 }
 
 /** Decrypt a vault secret: unwrap AES key with RSA, then decrypt value with AES-GCM */
-export function decryptVaultSecret(
+export async function decryptVaultSecret(
   encryptedValue: string,
   iv: string,
   authTag: string,
   wrappedAESKey: string
-): string {
+): Promise<string> {
   // Step 1: Unwrap the AES key
-  const aesKeyRaw = decryptWithPrivateKey(wrappedAESKey);
+  const aesKeyRaw = await decryptWithPrivateKey(wrappedAESKey);
   
   // Step 2: Decrypt with AES-256-GCM
   const decipher = crypto.createDecipheriv(

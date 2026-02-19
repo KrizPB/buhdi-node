@@ -112,7 +112,7 @@ export class TaskExecutor {
           continue;
         }
         try {
-          const value = decryptVaultSecret(
+          const value = await decryptVaultSecret(
             secret.encrypted_value,
             secret.iv,
             secret.auth_tag,
@@ -120,6 +120,7 @@ export class TaskExecutor {
           );
           decrypted[ref] = value;
         } catch (err: any) {
+          // LOW-3: Don't leak crypto internals
           console.warn(`⚠️  Failed to decrypt vault ref "${ref}": ${err.message}`);
         }
       }
@@ -130,30 +131,58 @@ export class TaskExecutor {
     return decrypted;
   }
 
-  /** Substitute {{vault:name}} placeholders in a string */
-  private substituteVaultRefs(str: string, secrets: Record<string, string>): string {
-    return str.replace(/\{\{vault:([^}]+)\}\}/g, (match, name) => {
-      return secrets[name] !== undefined ? secrets[name] : match;
-    });
+  /** Build environment variables for vault secrets (HIGH-3: inject as env vars, not into command strings) */
+  private buildVaultEnv(secrets: Record<string, string>): Record<string, string> {
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(secrets)) {
+      // Convert secret name to env var: VAULT_<UPPERCASE_NAME>
+      const envKey = `VAULT_${name.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`;
+      env[envKey] = value;
+    }
+    return env;
+  }
+
+  /** Mask any vault secret values in output text (HIGH-3: prevent secret leakage in logs/results) */
+  private maskSecrets(text: string, secrets: Record<string, string>): string {
+    let masked = text;
+    for (const value of Object.values(secrets)) {
+      if (value && value.length >= 4) {
+        // Replace all occurrences of the secret value
+        masked = masked.split(value).join('[REDACTED]');
+      }
+    }
+    return masked;
   }
 
   async execute(task: Task): Promise<TaskResult> {
     const start = Date.now();
+    let vaultSecrets: Record<string, string> = {};
     try {
       // Resolve vault refs if present
-      let vaultSecrets: Record<string, string> = {};
       if (task.payload?.vault_refs) {
         vaultSecrets = await this.resolveVaultRefs(task);
-        // Substitute in command strings
+        // HIGH-3: Do NOT substitute secrets into command strings.
+        // Instead, they are injected as environment variables (VAULT_<NAME>)
+        // and any {{vault:name}} placeholders are stripped from the command.
         if (task.payload.command) {
-          task.payload.command = this.substituteVaultRefs(task.payload.command, vaultSecrets);
+          task.payload.command = task.payload.command.replace(
+            /\{\{vault:([^}]+)\}\}/g,
+            (_match: string, name: string) => {
+              const envKey = `VAULT_${name.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`;
+              // Replace with env var reference appropriate to shell
+              return os.platform() === 'win32' ? `$env:${envKey}` : `$${envKey}`;
+            }
+          );
         }
       }
+
+      // HIGH-3: Build vault env vars for shell commands
+      const vaultEnv = this.buildVaultEnv(vaultSecrets);
 
       let result: any;
       switch (task.type) {
         case 'shell':
-          result = await this.execShell(task.payload.command, task.payload.cwd);
+          result = await this.execShell(task.payload.command, task.payload.cwd, vaultEnv);
           break;
         case 'file_read':
           result = await this.fileRead(task.payload.path);
@@ -192,33 +221,60 @@ export class TaskExecutor {
       }
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
       console.log(`✅ Completed in ${elapsed}s`);
+
+      // HIGH-3: Mask any vault secret values from the result before returning
+      if (Object.keys(vaultSecrets).length > 0) {
+        if (typeof result === 'string') {
+          result = this.maskSecrets(result, vaultSecrets);
+        } else if (result && typeof result === 'object') {
+          // Deep mask string fields
+          const jsonStr = JSON.stringify(result);
+          result = JSON.parse(this.maskSecrets(jsonStr, vaultSecrets));
+        }
+      }
+
       const taskResult: TaskResult = { status: 'completed', result };
       if (Object.keys(vaultSecrets).length > 0) {
         (taskResult as any).vault_used = true;
       }
       return taskResult;
     } catch (err: any) {
-      console.log(`❌ Failed: ${err.message}`);
-      return { status: 'failed', error: err.message };
+      // LOW-3: Catch crypto/vault errors and return generic messages
+      const errorMsg = err.message || String(err);
+      const isVaultError = errorMsg.includes('decrypt') || errorMsg.includes('Vault') || errorMsg.includes('OAEP') || errorMsg.includes('cipher');
+      if (isVaultError) {
+        console.error(`❌ Vault error (details suppressed from result):`, errorMsg);
+        return { status: 'failed', error: 'Vault decryption failed' };
+      }
+      // Mask any vault secrets from error messages too
+      const maskedError = Object.keys(vaultSecrets).length > 0
+        ? this.maskSecrets(errorMsg, vaultSecrets)
+        : errorMsg;
+      console.log(`❌ Failed: ${maskedError}`);
+      return { status: 'failed', error: maskedError };
     }
   }
 
-  private execShell(command: string, cwd?: string): Promise<string> {
+  private execShell(command: string, cwd?: string, vaultEnv?: Record<string, string>): Promise<string> {
     // Security: block dangerous patterns
     for (const pat of BLOCKED_SHELL_PATTERNS) {
       if (pat.test(command)) {
         return Promise.reject(new Error(`Blocked dangerous command pattern: ${command.slice(0, 80)}`));
       }
     }
-    // Security: block attempts to exfiltrate env vars
-    if (/\b(BRAVE_API_KEY|BUHDI_API_KEY|API_KEY|SECRET|TOKEN|PASSWORD)\b/i.test(command) &&
+    // Security: block attempts to exfiltrate env vars (also block VAULT_ exfil)
+    if (/\b(BRAVE_API_KEY|BUHDI_API_KEY|API_KEY|SECRET|TOKEN|PASSWORD|VAULT_)\b/i.test(command) &&
         /(echo|print|cat|type|set|env|Get-ChildItem\s+env)/i.test(command)) {
       return Promise.reject(new Error('Blocked: potential credential exfiltration'));
     }
 
     console.log(`🔧 Shell: ${command.slice(0, 120)}${command.length > 120 ? '...' : ''}`);
     return new Promise((resolve, reject) => {
-      exec(command, { cwd, timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      // HIGH-3: Inject vault secrets as environment variables instead of command string substitution
+      const env = vaultEnv && Object.keys(vaultEnv).length > 0
+        ? { ...process.env, ...vaultEnv }
+        : undefined;
+      exec(command, { cwd, timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true, env }, (err, stdout, stderr) => {
         if (err) reject(new Error(stderr || err.message));
         else resolve(stdout);
       });

@@ -153,6 +153,8 @@ export class NodeConnection {
     }
 
     this.ws.on('open', () => {
+      // MEDIUM-6: API key sent over WSS (TLS-encrypted). Acceptable for now.
+      // TODO v2: Consider challenge-response auth to avoid sending key at all.
       this.wsSend({ type: 'auth', key: this.apiKey });
     });
 
