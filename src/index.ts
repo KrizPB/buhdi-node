@@ -4,6 +4,7 @@ import { loadConfig, saveConfig } from './config';
 import { detectSystem, detectSoftware } from './handshake';
 import { NodeConnection } from './connection';
 import { TaskExecutor } from './executor';
+import { scanTools } from './tools';
 
 const VERSION = '0.1.0';
 
@@ -80,6 +81,7 @@ async function main(): Promise<void> {
     try {
       await connection.connect(systemInfo, software);
       console.log(`✅ Reconnected as "${connection.name}"\n`);
+      scanTools(config.apiKey).catch(() => {});
     } catch (err: any) {
       console.error(`❌ Reconnect failed: ${err.message}`);
       process.exit(1);
@@ -146,6 +148,7 @@ async function main(): Promise<void> {
   try {
     await connection.connect(systemInfo, software);
     console.log(`✅ Connected as "${connection.name}"\n`);
+    scanTools(apiKey).catch(() => {});
   } catch (err: any) {
     console.error(`❌ Connection failed: ${err.message}`);
     console.error('   Server APIs may not be deployed yet. Entering offline poll mode.\n');
