@@ -216,6 +216,93 @@ export class TaskExecutor {
         case 'status_ping':
           result = await this.statusPing(task.payload);
           break;
+
+        // --- Pipeline command handlers ---
+        case 'run-build': {
+          const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
+          result = await this.execShell('npm run build 2>&1', cwd, vaultEnv);
+          break;
+        }
+        case 'run-test': {
+          const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
+          result = await this.execShell('npm test 2>&1', cwd, vaultEnv);
+          break;
+        }
+        case 'write-file': {
+          const args = task.payload.args || task.payload;
+          result = await this.fileWrite(args.path, args.content);
+          break;
+        }
+        case 'read-file': {
+          const args = task.payload.args || task.payload;
+          result = await this.fileRead(args.path);
+          break;
+        }
+        case 'git-status': {
+          const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
+          result = await this.execShell('git status --porcelain', cwd, vaultEnv);
+          break;
+        }
+        case 'git-commit': {
+          const args = task.payload.args || task.payload;
+          const cwd = validateFilePath(args.cwd);
+          // Sanitize commit message: strip shell metacharacters
+          const rawMsg = String(args.message || 'auto-commit');
+          const safeMsg = rawMsg.replace(/[;&|`$(){}!\\"'\n\r]/g, '').slice(0, 200);
+          await this.execShell('git add .', cwd, vaultEnv);
+          result = await this.execShell(`git commit -m "${safeMsg}"`, cwd, vaultEnv);
+          break;
+        }
+        case 'git-push': {
+          const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
+          result = await this.execShell('git push', cwd, vaultEnv);
+          break;
+        }
+        case 'deploy': {
+          const args = task.payload.args || task.payload;
+          const hookUrl = args.deployHookUrl;
+          if (!hookUrl || !hookUrl.startsWith('https://')) {
+            throw new Error('deploy requires an HTTPS deployHookUrl');
+          }
+          const blocked = isBlockedUrl(hookUrl);
+          if (blocked) throw new Error(blocked);
+          result = await this.httpPost(hookUrl);
+          break;
+        }
+        case 'list-files': {
+          const args = task.payload.args || task.payload;
+          const cwd = validateFilePath(args.cwd);
+          const depth = Math.min(Math.max(Number(args.depth) || 3, 1), 5);
+          result = await this.listFilesTree(cwd, depth);
+          break;
+        }
+        case 'install-deps': {
+          const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
+          // Use npm ci if lockfile exists, otherwise npm install
+          let cmd = 'npm install';
+          try {
+            await fs.access(path.join(cwd, 'package-lock.json'));
+            cmd = 'npm ci';
+          } catch {}
+          result = await this.execShell(`${cmd} 2>&1`, cwd, vaultEnv);
+          break;
+        }
+        case 'lint': {
+          const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
+          result = await this.execShell('npm run lint 2>&1', cwd, vaultEnv);
+          break;
+        }
+        case 'format': {
+          const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
+          result = await this.execShell('npm run format 2>&1', cwd, vaultEnv);
+          break;
+        }
+        case 'npm-audit': {
+          const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
+          result = await this.npmAudit(cwd);
+          break;
+        }
+
         default:
           throw new Error(`Unknown task type: ${task.type}`);
       }
@@ -433,6 +520,61 @@ $bitmap.Dispose()
       },
       message: 'Node is alive and processing',
     };
+  }
+
+  // --- Deploy hook POST ---
+  private httpPost(url: string): Promise<any> {
+    const blocked = isBlockedUrl(url);
+    if (blocked) return Promise.reject(new Error(blocked));
+    return new Promise((resolve, reject) => {
+      const parsed = new URL(url);
+      const req = https.request({ hostname: parsed.hostname, port: parsed.port, path: parsed.pathname + parsed.search, method: 'POST', headers: { 'Content-Length': '0' } }, (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => body += c);
+        res.on('end', () => resolve({ status: res.statusCode, body: body.slice(0, 2000) }));
+      });
+      req.on('error', reject);
+      req.setTimeout(15000, () => { req.destroy(); reject(new Error('Deploy request timeout')); });
+      req.end();
+    });
+  }
+
+  // --- List files as tree ---
+  private async listFilesTree(dir: string, maxDepth: number, currentDepth: number = 0): Promise<any> {
+    if (currentDepth >= maxDepth) return '[max depth]';
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const tree: Record<string, any> = {};
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      if (entry.isDirectory()) {
+        tree[entry.name + '/'] = await this.listFilesTree(path.join(dir, entry.name), maxDepth, currentDepth + 1);
+      } else {
+        tree[entry.name] = null;
+      }
+    }
+    return tree;
+  }
+
+  // --- NPM audit with structured output ---
+  private async npmAudit(cwd: string): Promise<any> {
+    let stdout = '';
+    try {
+      stdout = await this.execShell('npm audit --json 2>&1', cwd);
+    } catch (err: any) {
+      // npm audit exits non-zero when vulns found — parse stdout from error
+      stdout = err.message || '';
+    }
+    try {
+      const parsed = JSON.parse(stdout);
+      const advisories = Object.values(parsed.vulnerabilities || parsed.advisories || {});
+      return {
+        summary: parsed.metadata || { total: advisories.length },
+        advisories: advisories.slice(0, 20),
+      };
+    } catch {
+      return { raw: stdout.slice(0, 5000) };
+    }
   }
 
   // --- Secured HTTP client with redirect limits and SSRF protection ---
