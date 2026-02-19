@@ -62,6 +62,8 @@ function isBlockedUrl(urlStr: string): string | null {
   }
 }
 
+const WORKSPACE_ROOT = process.env.BUHDI_WORKSPACE || process.cwd();
+
 function validateFilePath(filePath: string): string {
   const resolved = path.resolve(filePath);
   const normalized = resolved.replace(/\\/g, '/').toLowerCase();
@@ -69,6 +71,11 @@ function validateFilePath(filePath: string): string {
     if (normalized.includes(seg.toLowerCase())) {
       throw new Error(`Access denied: path contains sensitive segment '${seg}'`);
     }
+  }
+  // Workspace jail
+  const workspaceNorm = path.resolve(WORKSPACE_ROOT).replace(/\\/g, '/').toLowerCase();
+  if (!normalized.startsWith(workspaceNorm)) {
+    throw new Error('Access denied: path outside workspace');
   }
   return resolved;
 }
@@ -220,12 +227,12 @@ export class TaskExecutor {
         // --- Pipeline command handlers ---
         case 'run-build': {
           const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
-          result = await this.execShell('npm run build 2>&1', cwd, vaultEnv);
+          result = await this.execCommand('npm', ['run', 'build'], cwd, vaultEnv);
           break;
         }
         case 'run-test': {
           const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
-          result = await this.execShell('npm test 2>&1', cwd, vaultEnv);
+          result = await this.execCommand('npm', ['test'], cwd, vaultEnv);
           break;
         }
         case 'write-file': {
@@ -240,22 +247,20 @@ export class TaskExecutor {
         }
         case 'git-status': {
           const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
-          result = await this.execShell('git status --porcelain', cwd, vaultEnv);
+          result = await this.execCommand('git', ['status', '--porcelain'], cwd, vaultEnv);
           break;
         }
         case 'git-commit': {
           const args = task.payload.args || task.payload;
           const cwd = validateFilePath(args.cwd);
-          // Sanitize commit message: strip shell metacharacters
-          const rawMsg = String(args.message || 'auto-commit');
-          const safeMsg = rawMsg.replace(/[;&|`$(){}!\\"'\n\r]/g, '').slice(0, 200);
-          await this.execShell('git add .', cwd, vaultEnv);
-          result = await this.execShell(`git commit -m "${safeMsg}"`, cwd, vaultEnv);
+          const sanitizedMessage = String(args.message || 'auto-commit').slice(0, 200);
+          await this.execCommand('git', ['add', '.'], cwd, vaultEnv);
+          result = await this.execCommand('git', ['commit', '-m', sanitizedMessage], cwd, vaultEnv);
           break;
         }
         case 'git-push': {
           const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
-          result = await this.execShell('git push', cwd, vaultEnv);
+          result = await this.execCommand('git', ['push'], cwd, vaultEnv);
           break;
         }
         case 'deploy': {
@@ -279,22 +284,22 @@ export class TaskExecutor {
         case 'install-deps': {
           const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
           // Use npm ci if lockfile exists, otherwise npm install
-          let cmd = 'npm install';
+          let npmArgs = ['install'];
           try {
             await fs.access(path.join(cwd, 'package-lock.json'));
-            cmd = 'npm ci';
+            npmArgs = ['ci'];
           } catch {}
-          result = await this.execShell(`${cmd} 2>&1`, cwd, vaultEnv);
+          result = await this.execCommand('npm', npmArgs, cwd, vaultEnv);
           break;
         }
         case 'lint': {
           const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
-          result = await this.execShell('npm run lint 2>&1', cwd, vaultEnv);
+          result = await this.execCommand('npm', ['run', 'lint'], cwd, vaultEnv);
           break;
         }
         case 'format': {
           const cwd = validateFilePath(task.payload.args?.cwd || task.payload.cwd);
-          result = await this.execShell('npm run format 2>&1', cwd, vaultEnv);
+          result = await this.execCommand('npm', ['run', 'format'], cwd, vaultEnv);
           break;
         }
         case 'npm-audit': {
@@ -342,6 +347,25 @@ export class TaskExecutor {
     }
   }
 
+  private execCommand(cmd: string, args: string[], cwd?: string, vaultEnv?: Record<string, string>): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const env = vaultEnv && Object.keys(vaultEnv).length > 0
+        ? { ...process.env, ...vaultEnv }
+        : undefined;
+      const child = spawn(cmd, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d: Buffer) => stdout += d);
+      child.stderr.on('data', (d: Buffer) => stderr += d);
+      child.on('close', (code: number | null) => {
+        if (code !== 0) reject(new Error(stderr || `Exit code ${code}`));
+        else resolve(stdout);
+      });
+      child.on('error', reject);
+      setTimeout(() => { child.kill(); reject(new Error('Command timeout')); }, 30000);
+    });
+  }
+
   private execShell(command: string, cwd?: string, vaultEnv?: Record<string, string>): Promise<string> {
     // Security: block dangerous patterns
     for (const pat of BLOCKED_SHELL_PATTERNS) {
@@ -372,11 +396,14 @@ export class TaskExecutor {
   private async fileRead(filePath: string): Promise<string> {
     const safe = validateFilePath(filePath);
     console.log(`📄 Reading: ${safe}`);
+    const stat = await fs.stat(safe);
+    if (stat.size > 10 * 1024 * 1024) throw new Error('File too large (>10MB)');
     return await fs.readFile(safe, 'utf8');
   }
 
   private async fileWrite(filePath: string, content: string): Promise<any> {
     const safe = validateFilePath(filePath);
+    if (content.length > 10 * 1024 * 1024) throw new Error('Content too large (>10MB)');
     console.log(`📝 Writing: ${safe}`);
     await fs.writeFile(safe, content);
     return { written: safe };
@@ -390,7 +417,7 @@ export class TaskExecutor {
     const platform = os.platform();
     console.log(`🌐 Opening: ${url}`);
     if (platform === 'win32') {
-      spawn('cmd', ['/c', 'start', '', url], { shell: false, detached: true, stdio: 'ignore', windowsHide: true });
+      spawn('explorer', [url], { shell: false, detached: true, stdio: 'ignore', windowsHide: true });
     } else if (platform === 'darwin') {
       spawn('open', [url], { detached: true, stdio: 'ignore' });
     } else {
@@ -560,7 +587,7 @@ $bitmap.Dispose()
   private async npmAudit(cwd: string): Promise<any> {
     let stdout = '';
     try {
-      stdout = await this.execShell('npm audit --json 2>&1', cwd);
+      stdout = await this.execCommand('npm', ['audit', '--json'], cwd);
     } catch (err: any) {
       // npm audit exits non-zero when vulns found — parse stdout from error
       stdout = err.message || '';
