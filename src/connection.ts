@@ -1,5 +1,6 @@
 import { TaskExecutor, Task } from './executor';
 import WebSocket from 'ws';
+import { ensureKeypair, getPublicKey } from './vault';
 
 const BASE_URL = 'https://www.mybuhdi.com';
 const WS_URL = 'wss://buhdi-ws.fly.dev/ws';
@@ -51,6 +52,23 @@ export class NodeConnection {
     const data = await res.json() as any;
     this.nodeId = data.data?.node_id || data.node_id;
     this.nodeName = data.data?.node_name || data.node_name || 'Unknown';
+
+    // Ensure vault keypair exists and upload public key
+    try {
+      await ensureKeypair();
+      const publicKey = getPublicKey();
+      await fetch(`${BASE_URL}/api/node/vault/key`, {
+        method: 'POST',
+        headers: {
+          'x-node-key': this.apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ public_key: publicKey, algorithm: 'RSA-OAEP-4096' }),
+      });
+      console.log('🔐 Vault public key uploaded');
+    } catch (err: any) {
+      console.warn('⚠️  Vault key upload failed:', err.message);
+    }
   }
 
   startHeartbeat(): void {
@@ -72,6 +90,7 @@ export class NodeConnection {
   /** Start listening — WebSocket primary, polling fallback on disconnect */
   async startListening(executor: TaskExecutor): Promise<void> {
     this.executor = executor;
+    executor.setApiKey(this.apiKey);
     this.running = true;
 
     // Always try WebSocket first

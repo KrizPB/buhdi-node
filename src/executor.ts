@@ -5,6 +5,7 @@ import os from 'os';
 import http from 'http';
 import https from 'https';
 import { detectSystem, detectSoftware } from './handshake';
+import { decryptVaultSecret } from './vault';
 
 export interface Task {
   id: string;
@@ -73,9 +74,82 @@ function validateFilePath(filePath: string): string {
 }
 
 export class TaskExecutor {
+  private apiKey: string = '';
+
+  setApiKey(key: string): void {
+    this.apiKey = key;
+  }
+
+  /** Resolve vault_refs in task payload — decrypt secrets and inject into env/command */
+  private async resolveVaultRefs(task: Task): Promise<Record<string, string>> {
+    const decrypted: Record<string, string> = {};
+    const vaultRefs = task.payload?.vault_refs;
+    if (!vaultRefs || !Array.isArray(vaultRefs) || vaultRefs.length === 0) return decrypted;
+
+    try {
+      // Fetch encrypted secrets from cloud
+      const res = await fetch('https://www.mybuhdi.com/api/node/vault/secrets', {
+        headers: { 'x-node-key': this.apiKey },
+      });
+      if (!res.ok) {
+        console.warn('⚠️  Failed to fetch vault secrets');
+        return decrypted;
+      }
+      const { data: secrets } = await res.json() as any;
+      if (!secrets) return decrypted;
+
+      // Build lookup by name
+      const secretMap = new Map<string, any>();
+      for (const s of secrets) {
+        secretMap.set(s.name, s);
+      }
+
+      // Decrypt each referenced secret
+      for (const ref of vaultRefs) {
+        const secret = secretMap.get(ref);
+        if (!secret || !secret.node_encrypted_key) {
+          console.warn(`⚠️  Vault ref "${ref}" not found or no node key`);
+          continue;
+        }
+        try {
+          const value = decryptVaultSecret(
+            secret.encrypted_value,
+            secret.iv,
+            secret.auth_tag,
+            secret.node_encrypted_key
+          );
+          decrypted[ref] = value;
+        } catch (err: any) {
+          console.warn(`⚠️  Failed to decrypt vault ref "${ref}": ${err.message}`);
+        }
+      }
+    } catch (err: any) {
+      console.warn('⚠️  Vault resolution error:', err.message);
+    }
+
+    return decrypted;
+  }
+
+  /** Substitute {{vault:name}} placeholders in a string */
+  private substituteVaultRefs(str: string, secrets: Record<string, string>): string {
+    return str.replace(/\{\{vault:([^}]+)\}\}/g, (match, name) => {
+      return secrets[name] !== undefined ? secrets[name] : match;
+    });
+  }
+
   async execute(task: Task): Promise<TaskResult> {
     const start = Date.now();
     try {
+      // Resolve vault refs if present
+      let vaultSecrets: Record<string, string> = {};
+      if (task.payload?.vault_refs) {
+        vaultSecrets = await this.resolveVaultRefs(task);
+        // Substitute in command strings
+        if (task.payload.command) {
+          task.payload.command = this.substituteVaultRefs(task.payload.command, vaultSecrets);
+        }
+      }
+
       let result: any;
       switch (task.type) {
         case 'shell':
@@ -118,7 +192,11 @@ export class TaskExecutor {
       }
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
       console.log(`✅ Completed in ${elapsed}s`);
-      return { status: 'completed', result };
+      const taskResult: TaskResult = { status: 'completed', result };
+      if (Object.keys(vaultSecrets).length > 0) {
+        (taskResult as any).vault_used = true;
+      }
+      return taskResult;
     } catch (err: any) {
       console.log(`❌ Failed: ${err.message}`);
       return { status: 'failed', error: err.message };
