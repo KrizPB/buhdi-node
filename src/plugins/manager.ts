@@ -15,6 +15,7 @@ import { verifyDeploySignature, computeCodeHash } from './signing';
 import { deletePluginVault } from './plugin-vault';
 import { loadConfig } from '../config';
 import { registerDashboardPlugin, unregisterDashboardPlugin } from '../dashboard';
+import { RunLogger } from './run-logger';
 
 const PLUGINS_DIR = path.join(os.homedir(), '.buhdi-node', 'plugins');
 const MAX_PLUGINS = 10;
@@ -33,17 +34,24 @@ export interface DeployResult {
   message?: string;
 }
 
+const SELF_HEAL_ERROR_THRESHOLD = 3;
+
 export class PluginManager {
   private plugins = new Map<string, PluginInfo>();
   private pendingPlugins = new Map<string, { manifest: PluginManifest; codeBundle: string; deployOpts?: DeployOptions }>();
   private sandboxes = new Map<string, PluginSandbox>();
   private apiKey?: string;
   private nodeId?: string;
+  private runLogger?: RunLogger;
+  private consecutiveErrors = new Map<string, number>();
 
   constructor(opts?: { apiKey?: string; nodeId?: string }) {
     this.apiKey = opts?.apiKey;
     this.nodeId = opts?.nodeId;
     initAudit({ nodeId: this.nodeId, apiKey: this.apiKey });
+    if (this.apiKey && this.nodeId) {
+      this.runLogger = new RunLogger({ apiKey: this.apiKey, nodeId: this.nodeId });
+    }
   }
 
   getTrustLevel(): TrustLevel {
@@ -562,6 +570,131 @@ export class PluginManager {
   async stopAll(): Promise<void> {
     for (const name of this.sandboxes.keys()) {
       await this.stopPlugin(name).catch(() => {});
+    }
+  }
+
+  /**
+   * Log a plugin run and check for self-heal.
+   */
+  async logPluginRun(toolName: string, result: {
+    status: 'success' | 'error' | 'timeout';
+    startedAt: string;
+    duration_ms: number;
+    error?: string;
+  }): Promise<void> {
+    const info = this.plugins.get(toolName);
+    if (!info) return;
+
+    // Track consecutive errors for self-heal
+    if (result.status === 'error' || result.status === 'timeout') {
+      const count = (this.consecutiveErrors.get(toolName) ?? 0) + 1;
+      this.consecutiveErrors.set(toolName, count);
+    } else {
+      this.consecutiveErrors.set(toolName, 0);
+    }
+
+    // Log to cloud
+    if (this.runLogger) {
+      await this.runLogger.logRun({
+        toolName,
+        version: info.version,
+        status: result.status,
+        started_at: result.startedAt,
+        completed_at: new Date().toISOString(),
+        duration_ms: result.duration_ms,
+        error: result.error,
+        error_count: this.consecutiveErrors.get(toolName) ?? 0,
+      });
+    }
+
+    // Self-heal check
+    await this.selfHealCheck(toolName);
+  }
+
+  /**
+   * Self-heal: after N consecutive errors, auto-stop and check for auto-fix.
+   */
+  private async selfHealCheck(toolName: string): Promise<void> {
+    const errorCount = this.consecutiveErrors.get(toolName) ?? 0;
+    if (errorCount < SELF_HEAL_ERROR_THRESHOLD) return;
+
+    const info = this.plugins.get(toolName);
+    if (!info || info.status !== 'running') return;
+
+    console.warn(`[self-heal] ${toolName} has ${errorCount} consecutive errors — auto-stopping`);
+    await this.stopPlugin(toolName);
+
+    logAudit({
+      action: 'stop',
+      toolId: toolName,
+      version: info.version,
+      initiatedBy: 'system',
+      reason: `Auto-stopped after ${errorCount} consecutive errors`,
+    });
+
+    // Ask cloud for diagnosis
+    if (!this.apiKey || !this.nodeId) return;
+    try {
+      const res = await fetch(
+        `https://www.mybuhdi.com/api/node/tools/${encodeURIComponent(toolName)}/diagnose?nodeId=${encodeURIComponent(this.nodeId)}&limit=20`,
+        { headers: { 'x-node-key': this.apiKey } }
+      );
+      if (!res.ok) return;
+
+      const diagnosis = await res.json() as {
+        fixes?: Array<{
+          fixType: string;
+          requiresRedeploy: boolean;
+          patchedManifest?: PluginManifest | null;
+        }>;
+      };
+
+      // Apply non-redeploy fixes automatically
+      for (const fix of diagnosis.fixes ?? []) {
+        if (!fix.requiresRedeploy && fix.patchedManifest) {
+          // F-08: Validate patched manifest doesn't escalate permissions
+          const permChanges = detectPermissionChanges(info.manifest, fix.patchedManifest);
+          if (permChanges.hasEscalation) {
+            logAudit({
+              action: 'error',
+              toolId: toolName,
+              version: info.version,
+              initiatedBy: 'system',
+              reason: `Auto-fix rejected: would escalate permissions (${permChanges.added.join(', ')})`,
+            });
+            continue;
+          }
+
+          // Apply the patched manifest
+          const pluginDir = path.join(PLUGINS_DIR, toolName);
+          await fs.writeFile(
+            path.join(pluginDir, 'manifest.json'),
+            JSON.stringify(fix.patchedManifest, null, 2)
+          );
+          info.manifest = fix.patchedManifest;
+
+          logAudit({
+            action: 'update',
+            toolId: toolName,
+            version: info.version,
+            initiatedBy: 'system',
+            reason: `Auto-fix applied: ${fix.fixType}`,
+          });
+
+          // Reset error count and restart
+          this.consecutiveErrors.set(toolName, 0);
+          try {
+            await this.startPlugin(toolName);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[self-heal] Failed to restart ${toolName} after auto-fix:`, msg);
+          }
+          break;
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[self-heal] Failed to get diagnosis for ${toolName}:`, msg);
     }
   }
 
