@@ -479,11 +479,14 @@ export class TaskExecutor {
 
   private async buildWebpage(payload: any): Promise<any> {
     const { html, title, filename } = payload;
-    const outDir = path.join(os.homedir(), 'Desktop');
+    // CRITICAL: Write to workspace, not arbitrary Desktop path
+    const outDir = path.join(WORKSPACE_ROOT, 'buhdi-pages');
     // Security: sanitize filename — strip path separators and dangerous chars
     const rawName = (filename || `${(title || 'page').replace(/[^a-zA-Z0-9]/g, '_')}.html`);
     const safeName = path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_');
     const outFile = path.join(outDir, safeName);
+    // Validate it stays in workspace
+    validateFilePath(outFile);
 
     console.log(`🏗️ Building webpage: ${outFile}`);
     await fs.writeFile(outFile, html, 'utf8');
