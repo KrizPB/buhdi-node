@@ -511,6 +511,8 @@ export class NodeConnection extends EventEmitter {
     console.log(`🔧 Task: [${task.type}] ${task.payload?.command || task.payload?.path || ''}`);
     this.lastTaskAt = new Date().toISOString();
     updateHealthState({ lastTaskAt: this.lastTaskAt });
+    // Mark task as started in DB
+    this.markTaskStarted(task.id).catch(() => {});
     try {
       const result = await this.executor.execute(task);
       this.wsSend({ type: 'result', taskId: task.id, result });
@@ -654,6 +656,13 @@ export class NodeConnection extends EventEmitter {
     if (!res.ok) return [];
     const data = await res.json() as any;
     return data.data || data.tasks || [];
+  }
+
+  private async markTaskStarted(taskId: string): Promise<void> {
+    await fetch(`${BASE_URL}/api/node/tasks/${taskId}/started`, {
+      method: 'POST',
+      headers: { 'x-node-key': this.apiKey },
+    });
   }
 
   private async reportResult(taskId: string, result: any): Promise<void> {
