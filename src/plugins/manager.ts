@@ -467,6 +467,16 @@ export class PluginManager {
         });
         throw new Error('Update code hash mismatch — rejected');
       }
+    } else if (!deployOpts?.skipSignatureCheck) {
+      // W-E8: Reject updates without signature/hash (same policy as installPlugin)
+      logAudit({
+        action: 'error',
+        toolId: name,
+        version: manifest.version,
+        initiatedBy: 'cloud',
+        reason: 'Update rejected: no signature or code hash provided',
+      });
+      throw new Error('Update rejected: code must be signed or include a verified hash');
     }
 
     const oldVersion = info.version;
