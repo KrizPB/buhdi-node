@@ -197,18 +197,7 @@ CREATE POLICY "Users update own installs" ON skill_installs FOR UPDATE USING (au
 - Body: `{ nodeId: string }`
 - Uninstalls from node, updates tracking
 
-### 4.3 Contribute
-
-**`POST /api/skills/contribute`**
-- Auth required
-- Body: `{ name, displayName, description, category, tags, manifest, code, readme }`
-- Flow:
-  1. Validate manifest
-  2. Run Ward audit
-  3. If grade A or B → status='review' (queue for approval)
-  4. If grade C → reject with findings
-  5. Strip any user-specific data from code (automated scan)
-  6. Record with author_type='community'
+### 4.3 Auto-Contribute (Internal Only)
 
 **`POST /api/skills/auto-contribute`**
 - Internal (service role only)
@@ -356,12 +345,12 @@ Before any skill enters the library:
 - Click → detail page with readme, permissions, install button
 - "Installed" tab showing user's active skills across nodes
 
-### 8.2 Contribution Page (`/dashboard/skills/contribute`)
+### 8.2 Skill Detail Page
 
-- Form: name, description, category, code upload
-- Live Ward audit preview
-- Anonymization preview (what will be stripped)
-- Submit for review
+- Full readme/documentation
+- Permissions required
+- Install button (select which node(s))
+- "Installed on X nodes" indicator
 
 ---
 
@@ -393,10 +382,37 @@ Before any skill enters the library:
 
 ---
 
-## 11. Open Questions
+## 11. Design Decisions (Locked)
 
-1. **Skill versioning** — When library skill updates, auto-update installed nodes? Or notify + manual?
-2. **Rating system** — Should users rate/review skills? Could game it.
-3. **Revenue** — Premium skills? Or all free to keep the moat growing?
-4. **Forking** — Can users fork a library skill and customize? IP implications.
-5. **Skill dependencies** — Can skills depend on other skills? Adds complexity.
+1. **Skill versioning: Auto-update.** Cloud Buhdi owns the library AND controls the nodes. Library updates → Cloud Buhdi checks which nodes have that skill → pushes new version through deploy pipeline (Ward audited). No user action needed.
+
+2. **No rating system.** Internal library, not a public marketplace. Users see skills as "here's what your AI can do" — not a catalog to browse and review.
+
+3. **All free.** Moat grows faster when every user benefits. Premium skills would slow adoption.
+
+4. **No forking/custom user skills.** Keeps the library clean, prevents malicious code injection. Only Cloud Buhdi (with Ward audit) and system-authored skills enter the library. Users request capabilities, Cloud Buhdi builds them.
+
+5. **Skill synergy via graph memory (not hard dependencies).** Cloud Buhdi learns which skills work well together through execution patterns. Stored as relationship edges in the graph: "skill A + skill B → better outcome for task type X". Examples:
+   - Ralph Loop + UI QA = better deploys
+   - Web scraper + CSV analyzer = market research pipeline
+   - Disk monitor + backup runner = proactive data protection
+   
+   Over time, Cloud Buhdi recommends and chains skills automatically. No hardcoded dependencies — emergent intelligence from usage patterns.
+
+### 11.1 Skill Synergy Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS skill_synergies (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  skill_a text NOT NULL REFERENCES skill_library(name),
+  skill_b text NOT NULL REFERENCES skill_library(name),
+  task_category text NOT NULL,           -- what type of task benefits
+  effectiveness_score numeric(5,4),       -- 0-1, learned from outcomes
+  observation_count integer DEFAULT 1,    -- how many times seen together
+  discovered_at timestamptz DEFAULT now(),
+  last_observed_at timestamptz DEFAULT now(),
+  UNIQUE(skill_a, skill_b, task_category)
+);
+```
+
+Cloud Buhdi queries this before building new tools: "For task X, skills A+B together have a 0.92 effectiveness score across 47 observations → recommend chaining them."

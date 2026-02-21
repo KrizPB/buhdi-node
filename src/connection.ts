@@ -218,7 +218,7 @@ export class NodeConnection extends EventEmitter {
     console.log('🔌 Connecting via WebSocket...');
 
     try {
-      this.ws = new WebSocket(WS_URL);
+      this.ws = new WebSocket(`${WS_URL}?key=${encodeURIComponent(this.apiKey)}`);
     } catch (err: any) {
       console.error('❌ WebSocket creation failed:', err.message);
       this.onWsFailure();
@@ -226,7 +226,8 @@ export class NodeConnection extends EventEmitter {
     }
 
     this.ws.on('open', () => {
-      this.wsSend({ type: 'auth', key: this.apiKey });
+      // Auth is via query param, no message needed
+      // Server sends 'welcome' on successful auth
     });
 
     this.ws.on('message', (raw: WebSocket.Data) => {
