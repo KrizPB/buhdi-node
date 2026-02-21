@@ -77,6 +77,7 @@ export class PluginSandbox {
   private nodeId?: string;
   private running = false;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  private exitCallbacks: Array<() => void> = [];
 
   constructor(opts: SandboxOptions) {
     this.manifest = opts.manifest;
@@ -148,7 +149,13 @@ export class PluginSandbox {
     }
   }
 
+  /** Register a callback for when the sandbox exits/disposes. */
+  onExit(cb: () => void): void {
+    this.exitCallbacks.push(cb);
+  }
+
   dispose(): void {
+    const wasRunning = this.running;
     this.running = false;
     if (this.timeoutHandle) {
       clearTimeout(this.timeoutHandle);
@@ -161,6 +168,12 @@ export class PluginSandbox {
     } catch { /* already disposed */ }
     this.isolate = null;
     this.context = null;
+    if (wasRunning) {
+      for (const cb of this.exitCallbacks) {
+        try { cb(); } catch { /* ignore */ }
+      }
+    }
+    this.exitCallbacks = [];
   }
 
   // ---- API Bridge ----

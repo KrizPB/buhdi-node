@@ -159,10 +159,15 @@ function renderIndexPage(): string {
     a { color: #0066cc; text-decoration: none; font-weight: 500; }
     a:hover { text-decoration: underline; }
     small { color: #888; }
+    .nav { margin-bottom: 1rem; }
+    .nav a { margin-right: 1rem; }
   </style>
 </head>
 <body>
   <h1>🐻 Buhdi Node Dashboard</h1>
+  <div class="nav">
+    <a href="/deploys">🚀 Deploy History</a>
+  </div>
   <p>Installed dashboard plugins:</p>
   <ul>
     ${pluginList}
@@ -174,6 +179,142 @@ function renderIndexPage(): string {
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ---- Deploy History Page ----
+
+function renderDeploysPage(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deploy History — Buhdi Node</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #333; }
+    h1 { font-size: 1.5rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    th { font-weight: 600; color: #666; }
+    .status-deployed { color: #16a34a; font-weight: 600; }
+    .status-rejected, .status-rolled_back { color: #dc2626; font-weight: 600; }
+    .status-pending, .status-testing, .status-auditing { color: #ca8a04; font-weight: 600; }
+    .status-approved { color: #2563eb; font-weight: 600; }
+    .grade { display: inline-block; width: 1.5rem; height: 1.5rem; line-height: 1.5rem; text-align: center; border-radius: 4px; font-weight: 700; font-size: 0.8rem; color: #fff; }
+    .grade-A { background: #16a34a; }
+    .grade-B { background: #ca8a04; }
+    .grade-C { background: #dc2626; }
+    button { padding: 0.3rem 0.8rem; border: 1px solid #ddd; border-radius: 4px; background: #fff; cursor: pointer; font-size: 0.8rem; }
+    button:hover { background: #f5f5f5; }
+    .back { margin-bottom: 1rem; display: inline-block; color: #0066cc; text-decoration: none; }
+    .back:hover { text-decoration: underline; }
+    #error { color: #dc2626; margin: 1rem 0; }
+    #loading { color: #666; }
+  </style>
+</head>
+<body>
+  <a class="back" href="/">&larr; Dashboard</a>
+  <h1>🚀 Deploy History</h1>
+  <div id="loading">Loading deploys...</div>
+  <div id="error"></div>
+  <table id="deploys" style="display:none">
+    <thead>
+      <tr><th>Tool</th><th>Version</th><th>Status</th><th>Grade</th><th>Date</th><th>Actions</th></tr>
+    </thead>
+    <tbody id="deploy-rows"></tbody>
+  </table>
+  <script>
+    const API_BASE = 'https://www.mybuhdi.com';
+
+    function getToken() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('token') || '';
+    }
+
+    function statusClass(s) { return 'status-' + (s || 'pending'); }
+
+    function gradeHtml(g) {
+      if (!g) return '-';
+      return '<span class="grade grade-' + g + '">' + g + '</span>';
+    }
+
+    function formatDate(d) {
+      if (!d) return '-';
+      return new Date(d).toLocaleString();
+    }
+
+    async function loadDeploys() {
+      const token = getToken();
+      try {
+        const res = await fetch(API_BASE + '/api/node/deploys?limit=50', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const json = await res.json();
+        renderTable(json.data || []);
+      } catch (err) {
+        document.getElementById('error').textContent = 'Failed to load deploys: ' + err.message;
+        document.getElementById('loading').style.display = 'none';
+      }
+    }
+
+    function renderTable(deploys) {
+      document.getElementById('loading').style.display = 'none';
+      const table = document.getElementById('deploys');
+      const tbody = document.getElementById('deploy-rows');
+      table.style.display = '';
+      tbody.innerHTML = '';
+      if (deploys.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="color:#888">No deploys yet</td></tr>';
+        return;
+      }
+      for (const d of deploys) {
+        const tr = document.createElement('tr');
+        const safeId = esc(d.id || '').replace(/'/g, '');
+        const actions = d.status === 'deployed'
+          ? '<button onclick="rollback(\\'' + safeId + '\\')">Rollback</button>'
+          : (d.rollback_of ? 'Rollback' : '-');
+        tr.innerHTML =
+          '<td>' + esc(d.tool_name) + '</td>' +
+          '<td>' + esc(d.version) + '</td>' +
+          '<td class="' + statusClass(d.status) + '">' + esc(d.status) + '</td>' +
+          '<td>' + gradeHtml(d.quality_grade) + '</td>' +
+          '<td>' + formatDate(d.created_at) + '</td>' +
+          '<td>' + actions + '</td>';
+        tbody.appendChild(tr);
+      }
+    }
+
+    function esc(s) {
+      if (!s) return '';
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    async function rollback(id) {
+      if (!confirm('Rollback this deploy?')) return;
+      const token = getToken();
+      try {
+        const res = await fetch(API_BASE + '/api/node/deploy/' + id + '/rollback', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Rollback failed: ' + (err.error || 'Unknown error'));
+          return;
+        }
+        loadDeploys();
+      } catch (err) {
+        alert('Rollback failed: ' + err.message);
+      }
+    }
+
+    loadDeploys();
+  </script>
+</body>
+</html>`;
 }
 
 // ---- Server ----
@@ -196,6 +337,16 @@ export function startDashboardServer(port: number): http.Server | null {
     // Security headers for all responses
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
+
+    // Deploy history page
+    if (pathname === '/deploys') {
+      res.writeHead(200, {
+        'Content-Type': 'text/html',
+        'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src https://www.mybuhdi.com",
+      });
+      res.end(renderDeploysPage());
+      return;
+    }
 
     // Root index
     if (pathname === '/' || pathname === '') {

@@ -279,6 +279,9 @@ export class PluginManager {
       info.status = 'running';
       info.error = undefined;
 
+      // Post-deploy health check: verify plugin survives 5 seconds
+      await this.postDeployHealthCheck(name, sandbox);
+
       // Set up scheduler if manifest has schedule
       if (info.manifest.schedule) {
         schedulePlugin(name, info.manifest.schedule, () => {
@@ -289,11 +292,101 @@ export class PluginManager {
       }
 
       logAudit({ action: 'start', toolId: name, version: info.version, initiatedBy: 'system' });
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       info.status = 'error';
-      info.error = err.message;
+      info.error = errMsg;
       sandbox.dispose();
       throw err;
+    }
+  }
+
+  /**
+   * Post-deploy health check — verify plugin doesn't crash within 5 seconds.
+   * If it crashes, auto-rollback and report failure.
+   */
+  private async postDeployHealthCheck(name: string, sandbox: PluginSandbox): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const healthTimeout = setTimeout(() => {
+        // Plugin survived 5 seconds — report success
+        this.reportDeployResult(name, true).catch(() => {});
+        resolve();
+      }, 5000);
+
+      // Listen for early crash
+      sandbox.onExit(() => {
+        clearTimeout(healthTimeout);
+        const info = this.plugins.get(name);
+        if (info) {
+          info.status = 'error';
+          info.error = 'Plugin crashed during health check (within 5s of start)';
+          logAudit({
+            action: 'error',
+            toolId: name,
+            version: info.version,
+            initiatedBy: 'system',
+            reason: 'Post-deploy health check failed — plugin crashed',
+          });
+        }
+        this.sandboxes.delete(name);
+        this.reportDeployResult(name, false, 'Plugin crashed within 5 seconds of start').catch(() => {});
+        // Attempt auto-rollback to previous version
+        this.autoRollback(name).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`Auto-rollback of ${name} failed:`, msg);
+        });
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Auto-rollback to the most recent working version of a plugin.
+   */
+  private async autoRollback(name: string): Promise<void> {
+    const pluginDir = path.join(PLUGINS_DIR, name);
+    const versionsDir = path.join(pluginDir, 'versions');
+    try {
+      const versions = (await fs.readdir(versionsDir)).sort().reverse();
+      for (const ver of versions) {
+        const oldManifestPath = path.join(versionsDir, ver, 'manifest.json');
+        try {
+          const oldManifest = JSON.parse(await fs.readFile(oldManifestPath, 'utf8')) as PluginManifest;
+          const oldCodePath = path.join(versionsDir, ver, oldManifest.entry);
+          const oldCode = await fs.readFile(oldCodePath, 'utf8');
+
+          await this.writePluginToDisk(oldManifest, oldCode);
+          logAudit({
+            action: 'rollback',
+            toolId: name,
+            version: ver,
+            initiatedBy: 'system',
+            reason: 'Auto-rollback after health check failure',
+          });
+          return;
+        } catch { /* try next version */ }
+      }
+    } catch { /* no versions to rollback to */ }
+  }
+
+  /**
+   * Report deploy result back to cloud API.
+   */
+  async reportDeployResult(toolName: string, success: boolean, error?: string): Promise<void> {
+    if (!this.apiKey || !this.nodeId) return;
+    const baseUrl = 'https://www.mybuhdi.com';
+    try {
+      await fetch(`${baseUrl}/api/node/${encodeURIComponent(this.nodeId)}/tools/${encodeURIComponent(toolName)}/deploy-result`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-node-key': this.apiKey,
+        },
+        body: JSON.stringify({ success, error }),
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`Failed to report deploy result for ${toolName}:`, msg);
     }
   }
 
