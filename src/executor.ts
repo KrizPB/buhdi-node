@@ -62,7 +62,9 @@ function isBlockedUrl(urlStr: string): string | null {
   }
 }
 
-const WORKSPACE_ROOT = process.env.BUHDI_WORKSPACE || path.resolve(process.cwd(), '..');
+// Workspace root: BUHDI_WORKSPACE env var > user's home directory
+// Users can restrict this during setup. Home dir is a safe, intuitive default.
+const WORKSPACE_ROOT = process.env.BUHDI_WORKSPACE || os.homedir();
 
 function validateFilePath(filePath: string): string {
   const resolved = path.resolve(filePath);
