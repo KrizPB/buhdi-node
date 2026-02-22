@@ -308,8 +308,15 @@ export class TaskExecutor {
           break;
         }
 
-        default:
-          throw new Error(`Unknown task type: ${task.type}`);
+        default: {
+          // Handle cmd:category:operation tasks from capability matrix
+          if (task.type.startsWith('cmd:')) {
+            const { category, operation, args: cmdArgs, timeout: cmdTimeout } = task.payload;
+            result = await this.executeCmdTask(category, operation, cmdArgs, cmdTimeout, vaultEnv);
+          } else {
+            throw new Error(`Unknown task type: ${task.type}`);
+          }
+        }
       }
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
       console.log(`✅ Completed in ${elapsed}s`);
@@ -344,6 +351,158 @@ export class TaskExecutor {
         : errorMsg;
       console.log(`❌ Failed: ${maskedError}`);
       return { status: 'failed', error: maskedError };
+    }
+  }
+
+  private async executeCmdTask(category: string, operation: string, args: string, timeout: number, vaultEnv?: Record<string, string>): Promise<any> {
+    console.log(`🔧 CMD: ${category}:${operation} | ${args.slice(0, 100)}`);
+
+    switch (category) {
+      case 'file':
+        switch (operation) {
+          case 'read': return this.fileRead(args);
+          case 'write': {
+            // args format: "path|content"
+            const sep = args.indexOf('|');
+            if (sep === -1) throw new Error('file:write requires path|content');
+            return this.fileWrite(args.slice(0, sep), args.slice(sep + 1));
+          }
+          case 'list': return this.listFilesTree(validateFilePath(args || WORKSPACE_ROOT), 3);
+          case 'search': {
+            const dir = validateFilePath(args.split('|')[0] || WORKSPACE_ROOT);
+            const pattern = args.split('|')[1] || '*';
+            return this.execCommand(
+              os.platform() === 'win32' ? 'powershell' : 'find',
+              os.platform() === 'win32'
+                ? ['-c', `Get-ChildItem -Recurse -Path "${dir}" -Filter "${pattern}" | Select-Object -First 20 | ForEach-Object { $_.FullName }`]
+                : [dir, '-name', pattern, '-maxdepth', '4', '-type', 'f'],
+              undefined, vaultEnv
+            );
+          }
+          case 'move': {
+            const parts = args.split('|');
+            if (parts.length < 2) throw new Error('file:move requires source|destination');
+            const src = validateFilePath(parts[0]);
+            const dst = validateFilePath(parts[1]);
+            await fs.rename(src, dst);
+            return { moved: { from: src, to: dst } };
+          }
+          case 'delete': {
+            const target = validateFilePath(args);
+            await fs.unlink(target);
+            return { deleted: target };
+          }
+          default: throw new Error(`Unknown file operation: ${operation}`);
+        }
+
+      case 'git':
+        switch (operation) {
+          case 'status': return this.execCommand('git', ['status', '--porcelain'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          case 'diff': return this.execCommand('git', ['diff', '--stat'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          case 'log': return this.execCommand('git', ['log', '--oneline', '-20'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          case 'commit': {
+            const parts = args.split('|');
+            const cwd = validateFilePath(parts[0] || WORKSPACE_ROOT);
+            const msg = (parts[1] || 'auto-commit').slice(0, 200);
+            await this.execCommand('git', ['add', '.'], cwd, vaultEnv);
+            return this.execCommand('git', ['commit', '-m', msg], cwd, vaultEnv);
+          }
+          case 'push': return this.execCommand('git', ['push'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          case 'pull': return this.execCommand('git', ['pull'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          case 'branch': return this.execCommand('git', ['branch', '-a'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          case 'stash': return this.execCommand('git', ['stash'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          case 'rebase': return this.execCommand('git', ['rebase', args.split('|')[1] || 'main'], validateFilePath(args.split('|')[0] || WORKSPACE_ROOT), vaultEnv);
+          case 'force-push': return this.execCommand('git', ['push', '--force-with-lease'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          default: throw new Error(`Unknown git operation: ${operation}`);
+        }
+
+      case 'deploy':
+        switch (operation) {
+          case 'hook': {
+            if (!args.startsWith('https://')) throw new Error('Deploy hook must be HTTPS');
+            const blocked = isBlockedUrl(args);
+            if (blocked) throw new Error(blocked);
+            return this.httpPost(args);
+          }
+          case 'status': return this.execCommand('vercel', ['list', '--yes'], undefined, vaultEnv);
+          case 'env-list': return this.execCommand('vercel', ['env', 'ls'], undefined, vaultEnv);
+          case 'env-set': {
+            // args format: "KEY=VALUE" or "KEY=VALUE --environment production"
+            const eqIdx = args.indexOf('=');
+            if (eqIdx === -1) throw new Error('env-set requires KEY=VALUE');
+            const key = args.slice(0, eqIdx);
+            const value = args.slice(eqIdx + 1);
+            // Use vercel env add with stdin
+            return new Promise((resolve, reject) => {
+              const child = spawn('vercel', ['env', 'add', key, 'production', '--yes'], {
+                stdio: ['pipe', 'pipe', 'pipe'],
+                windowsHide: true,
+              });
+              let out = '';
+              child.stdout.on('data', (d: Buffer) => out += d);
+              child.stderr.on('data', (d: Buffer) => out += d);
+              child.on('close', (code: number | null) => {
+                if (code !== 0) reject(new Error(out || `Exit ${code}`));
+                else resolve({ set: key, environment: 'production', output: out });
+              });
+              child.on('error', reject);
+              child.stdin.write(value);
+              child.stdin.end();
+              setTimeout(() => { child.kill(); reject(new Error('Timeout')); }, 30000);
+            });
+          }
+          case 'env-remove': return this.execCommand('vercel', ['env', 'rm', args, '--yes'], undefined, vaultEnv);
+          case 'deploy': return this.execCommand('vercel', ['--prod', '--yes'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          case 'promote': return this.execCommand('vercel', ['promote', args, '--yes'], undefined, vaultEnv);
+          default: throw new Error(`Unknown deploy operation: ${operation}`);
+        }
+
+      case 'shell':
+        return this.execShell(args, undefined, vaultEnv);
+
+      case 'package':
+        switch (operation) {
+          case 'audit': return this.npmAudit(validateFilePath(args || WORKSPACE_ROOT));
+          case 'list': return this.execCommand('npm', ['list', '--depth=0'], validateFilePath(args || WORKSPACE_ROOT), vaultEnv);
+          case 'install': return this.execCommand('npm', ['install', ...args.split(/\s+/)], undefined, vaultEnv);
+          case 'update': return this.execCommand('npm', ['update', ...args.split(/\s+/)], undefined, vaultEnv);
+          case 'uninstall': return this.execCommand('npm', ['uninstall', ...args.split(/\s+/)], undefined, vaultEnv);
+          default: throw new Error(`Unknown package operation: ${operation}`);
+        }
+
+      case 'browser':
+        switch (operation) {
+          case 'screenshot': return this.takeScreenshot();
+          case 'navigate': return this.openUrl(args);
+          default: throw new Error(`Unknown browser operation: ${operation}`);
+        }
+
+      case 'sql':
+        // SQL execution via supabase-sql.py or direct psql
+        return this.execShell(`python scripts/supabase-sql.py "${args.replace(/"/g, '\\"')}"`, WORKSPACE_ROOT, vaultEnv);
+
+      case 'process':
+        switch (operation) {
+          case 'list':
+            return this.execShell(
+              os.platform() === 'win32' ? 'tasklist /fo csv /nh' : 'ps aux --sort=-pcpu | head -20',
+              undefined, vaultEnv
+            );
+          case 'start': return this.execShell(args, undefined, vaultEnv);
+          case 'stop':
+          case 'kill':
+            return this.execShell(
+              os.platform() === 'win32' ? `taskkill /pid ${args} /f` : `kill ${args}`,
+              undefined, vaultEnv
+            );
+          default: throw new Error(`Unknown process operation: ${operation}`);
+        }
+
+      case 'ssh':
+        return this.execShell(`ssh ${args}`, undefined, vaultEnv);
+
+      default:
+        throw new Error(`Unknown capability category: ${category}`);
     }
   }
 
