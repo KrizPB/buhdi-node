@@ -62,7 +62,7 @@ function isBlockedUrl(urlStr: string): string | null {
   }
 }
 
-const WORKSPACE_ROOT = process.env.BUHDI_WORKSPACE || process.cwd();
+const WORKSPACE_ROOT = process.env.BUHDI_WORKSPACE || path.resolve(process.cwd(), '..');
 
 function validateFilePath(filePath: string): string {
   const resolved = path.resolve(filePath);
