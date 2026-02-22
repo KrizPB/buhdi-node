@@ -1,5 +1,6 @@
 import { exec, spawn } from 'child_process';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import path from 'path';
 import os from 'os';
 import http from 'http';
@@ -35,12 +36,33 @@ const BLOCKED_SHELL_PATTERNS = [
 
 // --- Security: Sensitive file paths ---
 const SENSITIVE_PATH_SEGMENTS = [
-  '.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker',
+  // SSH & crypto keys
+  '.ssh', '.gnupg', 'id_rsa', 'id_ed25519', 'known_hosts',
+  // Cloud provider credentials
+  '.aws', '.azure', '.kube', '.docker', '.config/gcloud',
+  // Browser profiles (credentials, cookies)
   'AppData/Local/Google/Chrome', 'AppData/Local/Microsoft/Edge',
   'AppData/Roaming/Mozilla/Firefox',
-  '.config/gcloud', '.password-store',
-  'id_rsa', 'id_ed25519', 'known_hosts',
-  'credentials', 'tokens.json',
+  '.config/google-chrome', '.config/chromium', '.mozilla/firefox',
+  // Password managers & keyrings
+  '.password-store', 'AppData/Roaming/1Password', '.config/op',
+  '.local/share/keyrings',
+  // Environment files & secrets
+  '.env', '.env.local', '.env.production', '.env.development',
+  // Package manager tokens
+  '.npmrc', '.netrc', '.pypirc',
+  // Git credentials
+  '.gitconfig', '.git-credentials',
+  // CLI tokens (GitHub, Hub, etc.)
+  '.config/gh', '.config/hub',
+  // Shell history (may contain secrets)
+  '.bash_history', '.zsh_history', '.node_repl_history',
+  // This system's own secrets!
+  '.openclaw',
+  // Crypto wallets
+  'wallet.dat', '.keystore',
+  // Generic sensitive names
+  'credentials', 'tokens.json', 'secret', 'private_key',
 ];
 
 // --- Security: SSRF protection ---
@@ -67,7 +89,13 @@ function isBlockedUrl(urlStr: string): string | null {
 const WORKSPACE_ROOT = process.env.BUHDI_WORKSPACE || os.homedir();
 
 function validateFilePath(filePath: string): string {
-  const resolved = path.resolve(filePath);
+  let resolved = path.resolve(filePath);
+  // Resolve symlinks to prevent jail bypass via symlinked dirs
+  try {
+    resolved = fsSync.realpathSync(resolved);
+  } catch {
+    // Path doesn't exist yet (e.g., file:write) — resolve() is sufficient
+  }
   const normalized = resolved.replace(/\\/g, '/').toLowerCase();
   for (const seg of SENSITIVE_PATH_SEGMENTS) {
     if (normalized.includes(seg.toLowerCase())) {
