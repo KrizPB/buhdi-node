@@ -7,11 +7,13 @@
     "buhdi-node": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"fs=require('fs');fs.cpSync('src/dashboard','dist/dashboard',{recursive:true})\"",
+    "build:dashboard": "node -e \"fs=require('fs');fs.cpSync('src/dashboard','dist/dashboard',{recursive:true})\"",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts"
   },
   "dependencies": {
+    "dotenv": "^17.3.1",
     "isolated-vm": "^5.0.0",
     "node-cron": "^3.0.0",
     "winston": "^3.11.0",

@@ -256,6 +256,19 @@ export class TaskExecutor {
         case 'status_ping':
           result = await this.statusPing(task.payload);
           break;
+        case 'tool_execute': {
+          const { toolRegistry } = require('./tool-plugins');
+          const { tool, action: toolAction, params: toolParams } = task.payload;
+          if (tool && toolAction) {
+            result = await toolRegistry.execute(tool, toolAction, toolParams || {});
+          } else if (task.payload.tool_action) {
+            // Combined format: 'gmail_send_email'
+            result = await toolRegistry.executeByFullName(task.payload.tool_action, toolParams || {});
+          } else {
+            result = { success: false, output: 'Missing tool/action in payload' };
+          }
+          break;
+        }
 
         // --- Pipeline command handlers ---
         case 'run-build': {

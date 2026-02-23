@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>myBuhdi-Node</title>
+  <link rel="stylesheet" href="/dashboard/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐻</text></svg>">
+</head>
+<body>
+  <div id="app">
+    <!-- Top Header Bar (matches mybuhdi.com) -->
+    <header id="top-bar">
+      <div class="top-bar-left">
+        <span class="top-bar-logo">◆</span>
+        <span class="top-bar-title">my<strong>Buhdi</strong>-Node</span>
+      </div>
+      <nav class="top-bar-nav">
+        <button class="top-nav-btn active" data-view="chat">Chat</button>
+        <button class="top-nav-btn" data-view="dashboard">Dashboard</button>
+        <button class="top-nav-btn" data-view="jobs">Jobs</button>
+        <button class="top-nav-btn" data-view="tools">Tools</button>
+        <button class="top-nav-btn" data-view="editor">Config</button>
+        <button class="top-nav-btn" data-view="settings">Settings</button>
+      </nav>
+      <div class="top-bar-right">
+        <div id="top-status">
+          <span class="status-dot"></span>
+          <span id="status-text">Connecting</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Layout below header -->
+    <div id="layout">
+      <!-- Left Sidebar -->
+      <nav id="sidebar">
+        <div class="sidebar-section-label">Navigation</div>
+        <button class="nav-btn active" data-view="chat">
+          <span class="nav-icon">💬</span>
+          <span class="nav-label">Chat</span>
+        </button>
+        <button class="nav-btn" data-view="dashboard">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">Dashboard</span>
+        </button>
+        <button class="nav-btn" data-view="jobs">
+          <span class="nav-icon">📋</span>
+          <span class="nav-label">Jobs</span>
+        </button>
+        <button class="nav-btn" data-view="tools">
+          <span class="nav-icon">🔧</span>
+          <span class="nav-label">Tools</span>
+        </button>
+        <button class="nav-btn" data-view="editor">
+          <span class="nav-icon">📖</span>
+          <span class="nav-label">Config</span>
+        </button>
+        <button class="nav-btn" data-view="settings">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">Settings</span>
+        </button>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-node-info">
+          <div class="sidebar-node-name" id="sidebar-node-name">Node</div>
+          <div class="sidebar-node-version" id="sidebar-node-version">v0.3.0</div>
+        </div>
+      </nav>
+
+      <!-- Main Content -->
+      <main id="main">
+        <!-- Chat View -->
+        <div class="view active" id="view-chat">
+          <header class="view-header">
+            <h1>🐻 Buhdi</h1>
+            <span id="header-status" class="header-badge">Connecting...</span>
+          </header>
+          <div id="chat-messages"></div>
+          <div id="chat-typing" class="typing-indicator hidden">
+            <span class="typing-dot"></span>
+            <span class="typing-dot"></span>
+            <span class="typing-dot"></span>
+            <span class="typing-label">Buhdi is thinking...</span>
+          </div>
+          <form id="chat-form">
+            <div class="chat-input-row">
+              <textarea id="chat-input" placeholder="Type a message..." rows="1" autofocus></textarea>
+              <button type="submit" id="chat-send" title="Send">▶</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Dashboard View -->
+        <div class="view" id="view-dashboard">
+          <header class="view-header"><h1>📊 Dashboard</h1></header>
+          <div class="dashboard-grid">
+            <div class="dash-card">
+              <div class="dash-card-label">Connection</div>
+              <div class="dash-card-value" id="dash-connection">—</div>
+              <div class="dash-card-sub" id="dash-uptime">—</div>
+            </div>
+            <div class="dash-card">
+              <div class="dash-card-label">Memory</div>
+              <div class="dash-card-value" id="dash-memory">—</div>
+              <div class="dash-card-sub" id="dash-memory-sub">—</div>
+            </div>
+            <div class="dash-card">
+              <div class="dash-card-label">Tasks</div>
+              <div class="dash-card-value" id="dash-tasks">—</div>
+              <div class="dash-card-sub" id="dash-tasks-sub">—</div>
+            </div>
+          </div>
+          <section class="dash-section">
+            <h2>Recent Activity</h2>
+            <div id="dash-activity" class="activity-list">
+              <div class="activity-empty">No recent activity</div>
+            </div>
+          </section>
+          <section class="dash-section">
+            <h2>System</h2>
+            <div id="dash-system" class="system-info">—</div>
+          </section>
+          <section class="dash-section">
+            <h2>Tools</h2>
+            <div id="dash-tools" class="tools-row">—</div>
+          </section>
+        </div>
+
+        <!-- Jobs View -->
+        <div class="view" id="view-jobs">
+          <header class="view-header"><h1>📋 Jobs & Tasks</h1></header>
+          <section class="dash-section">
+            <h2>Running</h2>
+            <div id="jobs-running" class="job-list"><div class="activity-empty">No running tasks</div></div>
+          </section>
+          <section class="dash-section">
+            <h2>Completed</h2>
+            <div id="jobs-completed" class="job-list"><div class="activity-empty">No completed tasks</div></div>
+          </section>
+        </div>
+
+        <!-- Tools View -->
+        <div class="view" id="view-tools">
+          <header class="view-header">
+            <h1>🔧 Tools & Capabilities</h1>
+            <span class="header-badge" id="tools-count">Loading...</span>
+          </header>
+          <div class="tools-summary" id="tools-summary"></div>
+          <div class="tools-showcase" id="tools-showcase">
+            <div class="activity-empty">Loading tools catalog...</div>
+          </div>
+        </div>
+
+        <!-- Editor View -->
+        <div class="view" id="view-editor">
+          <header class="view-header"><h1>📖 Config Editor</h1></header>
+          <div class="editor-layout">
+            <div class="editor-sidebar">
+              <div id="editor-files" class="file-list">Loading...</div>
+              <button id="editor-new" class="btn-sm">+ New File</button>
+            </div>
+            <div class="editor-main">
+              <div id="editor-empty" class="editor-placeholder">Select a file to edit</div>
+              <textarea id="editor-content" class="editor-textarea hidden" spellcheck="false"></textarea>
+              <div class="editor-actions hidden" id="editor-actions">
+                <span id="editor-status" class="editor-save-status"></span>
+                <button id="editor-save" class="btn-primary">Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings View -->
+        <div class="view" id="view-settings">
+          <header class="view-header"><h1>⚙️ Settings</h1></header>
+          <section class="dash-section">
+            <h2>Connection</h2>
+            <div class="settings-group">
+              <label>API Key</label>
+              <div class="settings-value" id="settings-apikey">●●●●●●●●●●</div>
+            </div>
+            <div class="settings-group">
+              <label>Node Name</label>
+              <div class="settings-value" id="settings-nodename">—</div>
+            </div>
+            <div class="settings-group">
+              <label>Health Port</label>
+              <div class="settings-value" id="settings-port">—</div>
+            </div>
+          </section>
+          <section class="dash-section">
+            <h2>About</h2>
+            <div class="settings-group">
+              <label>Version</label>
+              <div class="settings-value" id="settings-version">—</div>
+            </div>
+            <div class="settings-group">
+              <label>Platform</label>
+              <div class="settings-value" id="settings-platform">—</div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Credential Modal -->
+  <div id="cred-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="cred-modal-title">Configure Tool</h2>
+        <button class="modal-close" id="cred-modal-close">✕</button>
+      </div>
+      <div class="modal-body" id="cred-modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/dashboard/lib/markdown.js"></script>
+  <script src="/dashboard/lib/ws.js"></script>
+  <script src="/dashboard/lib/api.js"></script>
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>

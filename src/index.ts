@@ -124,6 +124,14 @@ async function runConnect(apiKey: string, isDaemon = false): Promise<void> {
     const msg = `✅ Connected as "${connection.name}"`;
     if (isDaemon) getLogger().info(msg); else console.log(msg + '\n');
     scanTools(apiKey).catch(() => {});
+
+    // Initialize tool plugins
+    import('./tool-plugins').then(({ initToolPlugins }) => {
+      initToolPlugins().catch((err: any) => {
+        if (isDaemon) getLogger().warn('Tool plugin init error: ' + err.message);
+        else console.warn('⚠️  Tool plugin init:', err.message);
+      });
+    });
   } catch (err: any) {
     const msg = `Connection failed: ${err.message}`;
     if (isDaemon) getLogger().error(msg); else console.error(`❌ ${msg}\n   Entering offline poll mode.\n`);

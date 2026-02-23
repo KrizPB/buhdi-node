@@ -105,6 +105,7 @@ export class NodeConnection extends EventEmitter {
       connectionState: newState,
       wsConnected: newState === ConnectionState.CONNECTED,
       nodeId: this.nodeId,
+      nodeName: this.nodeName,
     });
   }
 

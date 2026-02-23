@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
 import os from 'os';
+import { updateHealthState } from './health';
 
 const BASE_URL = 'https://www.mybuhdi.com';
 
@@ -91,6 +92,11 @@ export async function scanTools(apiKey: string): Promise<void> {
 
   const detected = results.filter((r) => r.detected).length;
   console.log(`🔧 Found ${detected}/${results.length} tools`);
+
+  // Update health state with tool info for dashboard
+  updateHealthState({
+    tools: results.map(r => ({ name: r.tool_name, available: r.detected, version: r.version })),
+  });
 
   // Report to cloud
   try {

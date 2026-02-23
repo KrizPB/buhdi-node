@@ -32,6 +32,8 @@ export function detectSystem() {
     cpu: os.cpus()[0]?.model || 'Unknown',
     hostname: os.hostname(),
     platform: os.platform(),
+    homedir: os.homedir(),
+    workspace: process.env.BUHDI_WORKSPACE || os.homedir(),
   };
 }
 
