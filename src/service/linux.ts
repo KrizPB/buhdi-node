@@ -21,7 +21,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=${nodePath} ${scriptPath} daemon
-Restart=on-failure
+Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
 

@@ -34,6 +34,11 @@ const PONG_TIMEOUT = 10000;
 // Polling fallback threshold
 const WS_FAILURE_THRESHOLD = 5;
 
+// Internal watchdog
+const WATCHDOG_CHECK_INTERVAL = 10 * 60 * 1000; // 10 minutes
+const WATCHDOG_STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes without successful poll = stale
+const WATCHDOG_MAX_UPTIME = 6 * 60 * 60 * 1000; // 6 hours — clean restart
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -60,6 +65,11 @@ export class NodeConnection extends EventEmitter {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private awaitingPong = false;
+
+  // Internal watchdog
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private lastSuccessfulPoll: number = Date.now();
+  private startedAt: number = Date.now();
 
   constructor(apiKey: string) {
     super();
@@ -164,6 +174,7 @@ export class NodeConnection extends EventEmitter {
     this.executor = executor;
     executor.setApiKey(this.apiKey);
     this.running = true;
+    this.startWatchdog();
     this.connectWebSocket();
     while (this.running) {
       await sleep(1000);
@@ -193,6 +204,7 @@ export class NodeConnection extends EventEmitter {
 
     try {
       const tasks = await this.fetchTasks();
+      this.lastSuccessfulPoll = Date.now(); // Watchdog: poll succeeded
       for (const task of tasks) {
         console.log(`🔧 Task: [${task.type}] ${task.payload?.command || task.payload?.path || ''}`);
         this.lastTaskAt = new Date().toISOString();
@@ -289,6 +301,7 @@ export class NodeConnection extends EventEmitter {
         this.nodeName = msg.nodeName || this.nodeName;
         this.nodeId = msg.nodeId || this.nodeId;
         this.setState(ConnectionState.CONNECTED);
+        this.lastSuccessfulPoll = Date.now(); // Watchdog: WS connected = alive
         console.log(`✅ WebSocket connected as "${this.nodeName}"`);
         this.startWsHeartbeat();
         this.startPingPong();
@@ -510,6 +523,7 @@ export class NodeConnection extends EventEmitter {
 
     console.log(`🔧 Task: [${task.type}] ${task.payload?.command || task.payload?.path || ''}`);
     this.lastTaskAt = new Date().toISOString();
+    this.lastSuccessfulPoll = Date.now(); // Watchdog: WS task received = alive
     updateHealthState({ lastTaskAt: this.lastTaskAt });
     // Mark task as started in DB
     this.markTaskStarted(task.id).catch(() => {});
@@ -633,11 +647,62 @@ export class NodeConnection extends EventEmitter {
     }, Math.max(delay, 500));
   }
 
+  // ---- Internal Watchdog ----
+
+  private startWatchdog(): void {
+    if (this.watchdogTimer) return;
+    console.log('🐕 Watchdog started (stale check every 10m, max uptime 6h)');
+    this.watchdogTimer = setInterval(() => this.watchdogCheck(), WATCHDOG_CHECK_INTERVAL);
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  private watchdogCheck(): void {
+    const now = Date.now();
+    const uptime = now - this.startedAt;
+    const sincePoll = now - this.lastSuccessfulPoll;
+
+    // Max uptime: clean restart — OS service manager will restart us
+    if (uptime >= WATCHDOG_MAX_UPTIME) {
+      const hours = Math.round(uptime / 3600000 * 10) / 10;
+      console.log(`🐕 Watchdog: max uptime reached (${hours}h) — restarting`);
+      this.stop();
+      process.exit(0); // Clean exit — SCM/systemd/launchd restarts us
+      return;
+    }
+
+    // Stale connection: force WS reconnect
+    if (sincePoll >= WATCHDOG_STALE_THRESHOLD && this.wsConnected) {
+      const mins = Math.round(sincePoll / 60000);
+      console.log(`🐕 Watchdog: no successful activity in ${mins}m — forcing WS reconnect`);
+      if (this.ws) {
+        this.ws.close();
+        this.ws = null;
+      }
+      this.wsConnected = false;
+      this.stopWsHeartbeat();
+      this.stopPingPong();
+      this.startPolling();
+      this.scheduleReconnect();
+    }
+
+    // Log health
+    const uptimeMin = Math.round(uptime / 60000);
+    const stateStr = this._state;
+    console.log(`🐕 Watchdog: uptime=${uptimeMin}m state=${stateStr} lastActivity=${Math.round(sincePoll / 1000)}s ago`);
+  }
+
   stop(): void {
     this.running = false;
     this.stopPolling();
     this.stopWsHeartbeat();
     this.stopPingPong();
+    this.stopWatchdog();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
