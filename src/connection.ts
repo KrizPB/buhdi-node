@@ -364,7 +364,9 @@ export class NodeConnection extends EventEmitter {
         break;
 
       case 'SOFTWARE_UPDATE':
-        this.handleSoftwareUpdate(msg).catch(err => console.error('SOFTWARE_UPDATE error:', err.message));
+        // Handled via self_update task in executor — WS path only acks
+        console.log(`📦 SOFTWARE_UPDATE received (version: ${msg.version || 'latest'}) — will process via task`);
+        this.wsSend({ type: 'UPDATE_ACK', status: 'received', version: this.getCurrentVersion() });
         break;
 
       case 'CHECK_VERSION':
@@ -674,98 +676,6 @@ export class NodeConnection extends EventEmitter {
       uptime: Date.now() - this.startedAt,
       platform: require('os').platform(),
     });
-  }
-
-  private async handleSoftwareUpdate(msg: any): Promise<void> {
-    const targetVersion = msg.version;
-    const currentVersion = this.getCurrentVersion();
-    const force = msg.force === true;
-
-    console.log(`📦 Update requested: ${currentVersion} → ${targetVersion || 'latest'}`);
-
-    // Skip if already on target version (unless forced)
-    if (targetVersion && targetVersion === currentVersion && !force) {
-      console.log(`📦 Already on ${currentVersion} — skipping`);
-      this.wsSend({ type: 'UPDATE_ACK', status: 'skipped', version: currentVersion, reason: 'already_current' });
-      return;
-    }
-
-    // Major version bump requires explicit force flag
-    if (targetVersion && !force) {
-      const currentMajor = parseInt(currentVersion.split('.')[0], 10);
-      const targetMajor = parseInt(targetVersion.split('.')[0], 10);
-      if (targetMajor > currentMajor) {
-        console.log(`📦 Major version bump (${currentMajor} → ${targetMajor}) — requires force flag`);
-        this.wsSend({
-          type: 'UPDATE_ACK',
-          status: 'blocked',
-          version: currentVersion,
-          reason: 'major_version_bump',
-          message: `Major update ${currentVersion} → ${targetVersion} requires user approval`,
-        });
-        return;
-      }
-    }
-
-    this.wsSend({ type: 'UPDATE_ACK', status: 'updating', version: currentVersion });
-
-    try {
-      const { execSync } = require('child_process');
-      const pkg = targetVersion ? `buhdi-node@${targetVersion}` : 'buhdi-node';
-
-      // Determine package manager (npm global vs local)
-      const isGlobal = __dirname.includes('node_modules');
-      const installCmd = isGlobal
-        ? `npm update -g ${pkg}`
-        : `npm update ${pkg}`;
-
-      console.log(`📦 Running: ${installCmd}`);
-      const output = execSync(installCmd, {
-        encoding: 'utf8',
-        timeout: 120000,
-        windowsHide: true,
-      });
-      console.log(`📦 Update output: ${output.slice(0, 500)}`);
-
-      // Verify new version
-      const newVersion = this.getCurrentVersion();
-      console.log(`📦 Updated: ${currentVersion} → ${newVersion}`);
-
-      this.wsSend({
-        type: 'UPDATE_ACK',
-        status: 'completed',
-        previousVersion: currentVersion,
-        version: newVersion,
-      });
-
-      // Report to server via HTTP too (in case WS drops during restart)
-      fetch(`${BASE_URL}/api/node/heartbeat`, {
-        method: 'POST',
-        headers: { 'x-node-key': this.apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          node_id: this.nodeId,
-          event: 'software_update',
-          previousVersion: currentVersion,
-          newVersion,
-        }),
-      }).catch(() => {});
-
-      // Clean restart — OS service manager will start the new version
-      console.log('📦 Restarting to apply update...');
-      setTimeout(() => {
-        this.stop();
-        process.exit(0);
-      }, 2000);
-
-    } catch (err: any) {
-      console.error(`📦 Update failed: ${err.message}`);
-      this.wsSend({
-        type: 'UPDATE_ACK',
-        status: 'failed',
-        version: currentVersion,
-        error: err.message?.slice(0, 500),
-      });
-    }
   }
 
   // ---- Internal Watchdog ----

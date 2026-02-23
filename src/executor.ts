@@ -871,6 +871,11 @@ $bitmap.Dispose()
       currentVersion = JSON.parse(fsSync.readFileSync(pkgPath, 'utf8')).version || '0.0.0';
     } catch {}
 
+    // Defense-in-depth: validate version format (server also validates)
+    if (version && !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
+      return { status: 'failed', error: 'Invalid version format' };
+    }
+
     // Skip if already current
     if (version && version === currentVersion && !force) {
       return { status: 'skipped', version: currentVersion, reason: 'already_current' };
