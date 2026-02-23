@@ -125,6 +125,14 @@ async function runConnect(apiKey: string, isDaemon = false): Promise<void> {
     if (isDaemon) getLogger().info(msg); else console.log(msg + '\n');
     scanTools(apiKey).catch(() => {});
 
+    // Initialize LLM router
+    import('./llm').then(({ initLLMRouter }) => {
+      initLLMRouter();
+    }).catch((err: any) => {
+      if (isDaemon) getLogger().warn('LLM router init error: ' + err.message);
+      else console.warn('⚠️  LLM router init:', err.message);
+    });
+
     // Initialize tool plugins
     import('./tool-plugins').then(({ initToolPlugins }) => {
       initToolPlugins().catch((err: any) => {

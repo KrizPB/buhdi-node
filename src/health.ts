@@ -204,6 +204,115 @@ export function startHealthServer(port: number): http.Server | null {
       });
     }
 
+    // ---- LLM API ----
+    if (pathname === '/api/llm/status' && req.method === 'GET') {
+      try {
+        const { llmRouter } = require('./llm');
+        return jsonResponse(res, {
+          providers: llmRouter.getHealthStatus(),
+          stats: llmRouter.getStats(),
+          available: llmRouter.hasAvailableProvider(),
+        });
+      } catch {
+        return jsonResponse(res, { providers: [], stats: {}, available: false });
+      }
+    }
+
+    if (pathname === '/api/llm/chat' && req.method === 'POST') {
+      return readBody(req, async (body) => {
+        try {
+          const { message, history } = JSON.parse(body);
+          const { llmRouter } = require('./llm');
+          const { toolRegistry } = require('./tool-plugins');
+          const { sanitizeHistory, sanitizeToolOutput, validateToolCall, buildSystemPrompt, MAX_TOOL_CALLS_PER_TURN } = require('./llm/safety');
+
+          // H6-FIX: Sanitize client history (only user/assistant, strip secrets)
+          const safeHistory = sanitizeHistory(history);
+
+          const messages: any[] = [
+            { role: 'system', content: buildSystemPrompt() },
+            ...safeHistory,
+            { role: 'user', content: message },
+          ];
+
+          const tools = toolRegistry.getLLMToolSchemas();
+
+          const result = await llmRouter.complete({
+            messages,
+            tools: tools.length > 0 ? tools : undefined,
+          });
+
+          // H3-FIX: Cap tool calls per turn
+          if (result.toolCalls.length > 0) {
+            const cappedCalls = result.toolCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
+            const toolResults: any[] = [];
+
+            for (const tc of cappedCalls) {
+              // H2-FIX: Validate tool name against provided schemas
+              if (!validateToolCall(tc.function.name, tools)) {
+                toolResults.push({
+                  tool_call_id: tc.id,
+                  role: 'tool',
+                  content: `Error: tool "${tc.function.name}" is not available.`,
+                });
+                continue;
+              }
+
+              let params: Record<string, any> = {};
+              try { params = JSON.parse(tc.function.arguments); } catch {}
+              const toolResult = await toolRegistry.executeByFullName(tc.function.name, params);
+
+              // H1-FIX: Sanitize tool output before LLM re-injection
+              toolResults.push({
+                tool_call_id: tc.id,
+                role: 'tool',
+                content: sanitizeToolOutput(toolResult.output),
+              });
+            }
+
+            const followUp = await llmRouter.complete({
+              messages: [
+                ...messages,
+                { role: 'assistant', content: result.content, tool_calls: cappedCalls },
+                ...toolResults,
+              ],
+            });
+
+            jsonResponse(res, {
+              content: followUp.content,
+              provider: followUp.provider,
+              model: followUp.model,
+              latencyMs: result.latencyMs + followUp.latencyMs,
+              toolsUsed: cappedCalls.map((tc: any) => tc.function.name),
+            });
+          } else {
+            jsonResponse(res, {
+              content: result.content,
+              provider: result.provider,
+              model: result.model,
+              latencyMs: result.latencyMs,
+              toolsUsed: [],
+            });
+          }
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message, content: null }, 500);
+        }
+      });
+    }
+
+    if (pathname === '/api/llm/healthcheck' && req.method === 'POST') {
+      (async () => {
+        try {
+          const { llmRouter } = require('./llm');
+          await llmRouter.runHealthChecks();
+          jsonResponse(res, { providers: llmRouter.getHealthStatus() });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      })();
+      return;
+    }
+
     // ---- Tool Plugin API ----
     if (pathname === '/api/tool-plugins' && req.method === 'GET') {
       const { toolRegistry } = require('./tool-plugins');
@@ -292,13 +401,8 @@ export function startHealthServer(port: number): http.Server | null {
           if (chatHandler) {
             chatHandler(data.message, ws);
           } else {
-            // Echo placeholder until cloud relay is connected
-            ws.send(JSON.stringify({
-              type: 'chat.message',
-              role: 'assistant',
-              content: `[Node received] "${data.message}" — Cloud chat relay coming in Phase 2.`,
-              ts: new Date().toISOString(),
-            }));
+            // Route through LLM if available, otherwise placeholder
+            handleWSChat(data.message, data.history || [], ws);
           }
           addActivity('💬', `Chat: "${data.message.substring(0, 50)}"`);
         }
@@ -349,6 +453,159 @@ function serveFile(res: http.ServerResponse, filePath: string): void {
     res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
     res.end(data);
   });
+}
+
+// ---- WebSocket Chat → LLM ----
+async function handleWSChat(message: string, history: any[], ws: import('ws').WebSocket): Promise<void> {
+  try {
+    const { llmRouter } = require('./llm');
+    if (!llmRouter.hasAvailableProvider()) {
+      ws.send(JSON.stringify({
+        type: 'chat.message',
+        role: 'assistant',
+        content: 'No AI engine connected. Install [Ollama](https://ollama.com) and run `ollama pull llama3.1:8b`, or configure a cloud provider in Settings.',
+        ts: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const { toolRegistry } = require('./tool-plugins');
+    const { sanitizeHistory, buildSystemPrompt } = require('./llm/safety');
+    const tools = toolRegistry.getLLMToolSchemas();
+
+    // H6-FIX: Sanitize client history
+    const safeHistory = sanitizeHistory(history);
+
+    const messages = [
+      { role: 'system', content: buildSystemPrompt() },
+      ...safeHistory,
+      { role: 'user', content: message },
+    ];
+
+    // Stream response
+    let fullContent = '';
+    await llmRouter.stream(
+      { messages, tools: tools.length > 0 ? tools : undefined },
+      {
+        onToken: (token: string) => {
+          fullContent += token;
+          ws.send(JSON.stringify({ type: 'chat.stream', token }));
+        },
+        onToolCall: async (tc: any) => {
+          ws.send(JSON.stringify({
+            type: 'chat.tool_call',
+            tool: tc.function.name,
+            args: tc.function.arguments,
+          }));
+        },
+        onDone: (response: any) => {
+          if (response.toolCalls?.length > 0) {
+            // Execute tools and get final response
+            handleToolCallsAndRespond(messages, fullContent, response, ws);
+          } else {
+            ws.send(JSON.stringify({
+              type: 'chat.stream.end',
+              full_text: fullContent,
+              provider: response.provider,
+              model: response.model,
+            }));
+          }
+        },
+        onError: (err: Error) => {
+          ws.send(JSON.stringify({
+            type: 'chat.message',
+            role: 'assistant',
+            content: `AI error: ${err.message}`,
+            ts: new Date().toISOString(),
+          }));
+        },
+      }
+    );
+  } catch (err: any) {
+    ws.send(JSON.stringify({
+      type: 'chat.message',
+      role: 'assistant',
+      content: `Error: ${err.message}`,
+      ts: new Date().toISOString(),
+    }));
+  }
+}
+
+async function handleToolCallsAndRespond(
+  messages: any[], assistantContent: string, response: any, ws: import('ws').WebSocket
+): Promise<void> {
+  try {
+    const { llmRouter } = require('./llm');
+    const { toolRegistry } = require('./tool-plugins');
+    const { sanitizeToolOutput, validateToolCall, MAX_TOOL_CALLS_PER_TURN } = require('./llm/safety');
+
+    // H3-FIX: Cap tool calls
+    const cappedCalls = response.toolCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
+    const tools = toolRegistry.getLLMToolSchemas();
+
+    const toolResults: any[] = [];
+    for (const tc of cappedCalls) {
+      // H2-FIX: Validate tool name
+      if (!validateToolCall(tc.function.name, tools)) {
+        toolResults.push({
+          tool_call_id: tc.id,
+          role: 'tool',
+          content: `Error: tool "${tc.function.name}" is not available.`,
+        });
+        continue;
+      }
+
+      let params: Record<string, any> = {};
+      try { params = JSON.parse(tc.function.arguments); } catch {}
+
+      ws.send(JSON.stringify({
+        type: 'chat.tool_executing',
+        tool: tc.function.name,
+      }));
+
+      const result = await toolRegistry.executeByFullName(tc.function.name, params);
+
+      // H1-FIX: Sanitize tool output
+      const sanitizedOutput = sanitizeToolOutput(result.output);
+      toolResults.push({
+        tool_call_id: tc.id,
+        role: 'tool',
+        content: sanitizedOutput,
+      });
+
+      ws.send(JSON.stringify({
+        type: 'chat.tool_result',
+        tool: tc.function.name,
+        success: result.success,
+        output: sanitizedOutput.substring(0, 200),
+      }));
+    }
+
+    const followUp = await llmRouter.complete({
+      messages: [
+        ...messages,
+        { role: 'assistant', content: assistantContent, tool_calls: cappedCalls },
+        ...toolResults,
+      ],
+    });
+
+    ws.send(JSON.stringify({
+      type: 'chat.message',
+      role: 'assistant',
+      content: followUp.content || 'Tool executed but no response generated.',
+      ts: new Date().toISOString(),
+      provider: followUp.provider,
+      model: followUp.model,
+      toolsUsed: cappedCalls.map((tc: any) => tc.function.name),
+    }));
+  } catch (err: any) {
+    ws.send(JSON.stringify({
+      type: 'chat.message',
+      role: 'assistant',
+      content: `Tool execution error: ${err.message}`,
+      ts: new Date().toISOString(),
+    }));
+  }
 }
 
 const MAX_BODY_SIZE = 1024 * 1024; // L2-FIX: 1MB max request body

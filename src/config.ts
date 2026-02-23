@@ -30,6 +30,21 @@ export interface BuhdiConfig {
     polling?: boolean;
     vault?: boolean;
   };
+  llm?: {
+    strategy?: string;
+    providers?: Array<{
+      name: string;
+      endpoint: string;
+      model: string;
+      apiKey?: string;           // NOTE: For local-only use. For production, store in credential vault as 'llm_<name>'
+      priority: number;
+      capabilities: string[];
+      maxContext: number;
+      enabled: boolean;
+    }>;
+    maxLatencyMs?: number;
+    retries?: number;
+  };
 }
 
 // Legacy compat export
