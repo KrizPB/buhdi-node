@@ -244,6 +244,9 @@ export class TaskExecutor {
           console.log('⚠️  SCREENSHOT REQUESTED');
           result = await this.takeScreenshot();
           break;
+        case 'self_update':
+          result = await this.selfUpdate(task.payload.version, task.payload.force);
+          break;
         case 'web_search':
           result = await this.webSearch(task.payload.query, task.payload.count);
           break;
@@ -859,5 +862,55 @@ $bitmap.Dispose()
     if (text.length > limit) text = text.substring(0, limit) + '... [truncated]';
 
     return { url, status, length: text.length, content: text };
+  }
+
+  private async selfUpdate(version?: string, force?: boolean): Promise<any> {
+    const pkgPath = path.resolve(__dirname, '..', 'package.json');
+    let currentVersion = '0.0.0';
+    try {
+      currentVersion = JSON.parse(fsSync.readFileSync(pkgPath, 'utf8')).version || '0.0.0';
+    } catch {}
+
+    // Skip if already current
+    if (version && version === currentVersion && !force) {
+      return { status: 'skipped', version: currentVersion, reason: 'already_current' };
+    }
+
+    // Block major bumps without force
+    if (version && !force) {
+      const curMajor = parseInt(currentVersion.split('.')[0], 10);
+      const tgtMajor = parseInt(version.split('.')[0], 10);
+      if (tgtMajor > curMajor) {
+        return { status: 'blocked', version: currentVersion, reason: 'major_version_bump' };
+      }
+    }
+
+    const pkg = version ? `buhdi-node@${version}` : 'buhdi-node';
+    const isGlobal = __dirname.includes('node_modules');
+    const cmd = isGlobal ? `npm update -g ${pkg}` : `npm update ${pkg}`;
+
+    console.log(`📦 Self-update: ${cmd}`);
+    const { execSync } = require('child_process');
+    const output = execSync(cmd, { encoding: 'utf8', timeout: 120000, windowsHide: true });
+
+    let newVersion = currentVersion;
+    try {
+      newVersion = JSON.parse(fsSync.readFileSync(pkgPath, 'utf8')).version || currentVersion;
+    } catch {}
+
+    console.log(`📦 Updated: ${currentVersion} → ${newVersion}`);
+
+    // Schedule restart after result is reported
+    setTimeout(() => {
+      console.log('📦 Restarting to apply update...');
+      process.exit(0);
+    }, 3000);
+
+    return {
+      status: 'completed',
+      previousVersion: currentVersion,
+      version: newVersion,
+      output: output.slice(0, 500),
+    };
   }
 }
