@@ -57,28 +57,90 @@ function printSystemInfo(info: ReturnType<typeof detectSystem>): void {
 }
 
 async function runSetup(apiKey: string): Promise<void> {
-  console.log(`🐻 Buhdi Node v${VERSION}`);
-  console.log('🔑 Validating API key...\n');
+  console.log(`\n🐻 Installing Buhdi Node...\n`);
+
+  // Step 1: Register node with mybuhdi.com (one call does everything)
+  const systemInfo = detectSystem();
+  let nodeKey: string;
+  let nodeName: string;
 
   try {
-    const res = await fetch('https://www.mybuhdi.com/api/node/connect', {
+    const res = await fetch('https://www.mybuhdi.com/api/node/setup', {
       method: 'POST',
-      headers: { 'x-node-key': apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ system_info: detectSystem(), capabilities: [] }),
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hostname: os.hostname(),
+        os: process.platform,
+        arch: process.arch,
+        system_info: systemInfo,
+      }),
     });
+
     if (!res.ok) {
-      console.error(`❌ API key invalid (${res.status})`);
+      // Maybe it's a node key (bnode_), not an API key (bm_live_)
+      if (apiKey.startsWith('bnode_')) {
+        console.log('  ℹ  Detected node key — using legacy setup');
+        setApiKey(apiKey);
+        console.log('  ✓ Node key saved');
+        console.log(`\n🎉 Setup complete! Run: buhdi-node daemon\n`);
+        process.exit(0);
+      }
+      const errText = await res.text().catch(() => '');
+      console.error(`  ❌ Connection failed (${res.status})`);
+      if (errText.includes('Unauthorized')) {
+        console.error('     Invalid API key. Get yours at https://www.mybuhdi.com/settings');
+      }
       process.exit(1);
     }
+
     const data = await res.json() as any;
-    console.log(`✅ Key valid! Node: "${data.data?.node_name || data.node_name || 'Unknown'}"`);
+    nodeKey = data.data.node_key;
+    nodeName = data.data.node_name;
+    console.log(`  ✓ Connected to mybuhdi.com`);
+    console.log(`  ✓ Node registered: "${nodeName}"`);
   } catch (err: any) {
-    console.error(`❌ Validation failed: ${err.message}`);
+    console.error(`  ❌ Connection failed: ${err.message}`);
+    console.error('     Check your internet connection and try again.');
     process.exit(1);
   }
 
-  setApiKey(apiKey);
-  console.log('💾 API key encrypted and saved');
+  // Step 2: Save node key (encrypted)
+  setApiKey(nodeKey);
+  console.log('  ✓ Credentials saved');
+
+  // Step 3: Connect memory
+  const config = loadConfig();
+  if (!config.memory) (config as any).memory = {};
+  (config as any).memory.sync = {
+    enabled: true,
+    cloud_url: 'https://www.mybuhdi.com',
+    api_key: apiKey,
+    interval_seconds: 300,
+  };
+  saveConfig(config);
+  console.log('  ✓ Memory connected');
+
+  // Step 4: Start the daemon
+  console.log('  ✓ Starting Buhdi...\n');
+
+  const healthPort = config.healthPort ?? 9847;
+  const dashUrl = `http://localhost:${healthPort}`;
+
+  console.log(`🎉 Done! Buhdi is running.\n`);
+  console.log(`  Dashboard: ${dashUrl}`);
+  console.log(`  To stop:   buhdi-node stop`);
+  console.log(`  To start:  buhdi-node start\n`);
+
+  // Try to open dashboard in browser
+  try {
+    const { exec: execCmd } = require('child_process');
+    const openCmd = process.platform === 'win32' ? 'start' 
+      : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    execCmd(`${openCmd} ${dashUrl}`);
+  } catch {}
+
+  // Start connecting (this blocks — runs the daemon)
+  await runConnect(nodeKey, false);
 }
 
 async function runConnect(apiKey: string, isDaemon = false): Promise<void> {
