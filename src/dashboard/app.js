@@ -1497,6 +1497,30 @@
   });
 
   // Reindex button
+  // Sync from cloud
+  document.getElementById('memory-sync-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('memory-sync-btn');
+    if (btn) btn.textContent = '⏳ Syncing...';
+    try {
+      const result = await buhdiAPI.memorySync();
+      if (result.ok) {
+        const msg = `Synced ${result.entities || 0} entities, ${result.facts || 0} facts (${result.pages || 0} pages)`;
+        // Show in a status div instead of alert
+        const statusDiv = document.getElementById('memory-search-results');
+        if (statusDiv) statusDiv.innerHTML = `<div class="activity-empty" style="color:var(--success)">✅ ${msg}</div>`;
+        await loadMemoryView();
+      } else {
+        const statusDiv = document.getElementById('memory-search-results');
+        if (statusDiv) statusDiv.innerHTML = `<div class="activity-empty" style="color:#ef4444">❌ ${result.error || 'Sync failed'}</div>`;
+      }
+    } catch (err) {
+      const statusDiv = document.getElementById('memory-search-results');
+      if (statusDiv) statusDiv.innerHTML = `<div class="activity-empty" style="color:#ef4444">Sync error: ${escapeHtml(err.message)}</div>`;
+    } finally {
+      if (btn) btn.textContent = '☁️ Sync';
+    }
+  });
+
   document.getElementById('memory-reindex-btn')?.addEventListener('click', async () => {
     const btn = document.getElementById('memory-reindex-btn');
     if (btn) btn.textContent = 'Reindexing...';

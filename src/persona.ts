@@ -407,6 +407,14 @@ export async function syncCloudPersona(): Promise<{ ok: boolean; error?: string 
 }
 
 /**
+ * Manual trigger for full graph sync from cloud → local SQLite.
+ * Called from dashboard "Sync Now" button.
+ */
+export async function fullGraphSyncManual(): Promise<{ entities: number; facts: number; pages: number } | null> {
+  return fullGraphSync();
+}
+
+/**
  * Get persona info for dashboard display.
  */
 export function getPersonaInfo(): {

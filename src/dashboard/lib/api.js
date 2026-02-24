@@ -82,6 +82,7 @@ window.buhdiAPI = {
     return this.get(`/api/memory/context?q=${encodeURIComponent(q)}&limit=${limit}`);
   },
   memoryReindex()   { return this.post('/api/memory/reindex', {}); },
+  memorySync()      { return this.post('/api/memory/sync', {}); },
   // Providers
   providersList()     { return this.get('/api/providers'); },
   providerSave(data)  { return this.post('/api/providers', data); },

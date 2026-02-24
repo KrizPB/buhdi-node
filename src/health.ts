@@ -637,6 +637,23 @@ export function startHealthServer(port: number): http.Server | null {
       });
     }
 
+    if (pathname === '/api/memory/sync' && req.method === 'POST') {
+      const { fullGraphSyncManual } = require('./persona');
+      if (!fullGraphSyncManual) {
+        return jsonResponse(res, { ok: false, error: 'Sync not available — upgrade node' });
+      }
+      fullGraphSyncManual().then((result: any) => {
+        if (!result) {
+          jsonResponse(res, { ok: false, error: 'Cloud memory not configured or sync unavailable' });
+        } else {
+          jsonResponse(res, { ok: true, ...result });
+        }
+      }).catch((err: any) => {
+        jsonResponse(res, { ok: false, error: err.message });
+      });
+      return;
+    }
+
     if (pathname === '/api/persona/sync' && req.method === 'POST') {
       const { syncCloudPersona } = require('./persona');
       syncCloudPersona().then((result: any) => {
