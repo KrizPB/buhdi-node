@@ -527,6 +527,8 @@ export function startHealthServer(port: number): http.Server | null {
       return jsonResponse(res, getPersonaInfo());
     }
 
+    // Debug prompt endpoint removed per Ward H2 — never expose assembled prompts
+
     if (pathname === '/api/memory/connect' && req.method === 'POST') {
       return readBody(req, async (body) => {
         try {
