@@ -780,6 +780,59 @@ html, body {
 #chat-send:hover { background: var(--accent-hover); }
 #chat-send:disabled { opacity: 0.3; cursor: not-allowed; background: transparent; color: var(--text-muted); }
 
+/* Custom tool badge */
+.tool-type-tag.custom {
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+/* Add custom tool card */
+.tool-card-add {
+  border: 2px dashed var(--border-light);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  transition: all 0.15s;
+  min-height: 80px;
+}
+.tool-card-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(245, 158, 11, 0.03);
+}
+
+/* Custom tool edit/delete overlay */
+.tool-card-custom-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: none;
+  gap: 4px;
+}
+.tool-card:hover .tool-card-custom-actions { display: flex; }
+.tool-card-custom-actions button {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tool-card-custom-actions button:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.tool-card-custom-actions button.delete:hover { color: #ef4444; }
+
 /* ---- Dashboard ---- */
 .dashboard-grid {
   display: grid;

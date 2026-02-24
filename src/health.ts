@@ -164,6 +164,71 @@ export function startHealthServer(port: number): http.Server | null {
       return jsonResponse(res, { tools: _state.tools });
     }
 
+    // Custom tools CRUD
+    if (pathname === '/api/custom-tools' && req.method === 'GET') {
+      const { loadConfig } = require('./config');
+      const config = loadConfig();
+      return jsonResponse(res, { tools: (config as any).customTools || [] });
+    }
+
+    if (pathname === '/api/custom-tools' && req.method === 'POST') {
+      return readBody(req, (rawBody) => {
+        try {
+          const body = JSON.parse(rawBody);
+          const { loadConfig, saveConfig } = require('./config');
+          const config = loadConfig();
+          if (!(config as any).customTools) (config as any).customTools = [];
+          // Validate API URL if provided
+          const rawUrl = String(body.apiBaseUrl || '').trim();
+          if (rawUrl && !/^https?:\/\//i.test(rawUrl)) {
+            return jsonResponse(res, { error: 'API URL must start with http:// or https://' }, 400);
+          }
+          // Block private/internal IPs (SSRF prevention)
+          if (rawUrl && /^https?:\/\/(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(rawUrl)) {
+            return jsonResponse(res, { error: 'API URL cannot point to private/internal addresses' }, 400);
+          }
+          const tool = {
+            name: String(body.name || '').toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 50),
+            displayName: String(body.displayName || body.name || '').slice(0, 100),
+            desc: String(body.desc || '').slice(0, 200),
+            category: String(body.category || 'Custom'),
+            apiBaseUrl: rawUrl,
+            authType: ['api_key', 'bearer', 'oauth', 'none'].includes(body.authType) ? body.authType : 'api_key',
+            credLabel: String(body.credLabel || 'API Key'),
+            custom: true,
+            createdAt: new Date().toISOString(),
+          };
+          if (!tool.name) return jsonResponse(res, { error: 'Name is required' }, 400);
+          // Block names that collide with built-in tools (checked client-side too)
+          const BUILTIN_NAMES = ['gmail','outlook','zoom','ringcentral','hubspot','salesforce','pipedrive','stripe_payments','quickbooks','zendesk','asana','trello','google_calendar','calendly','canva','mailchimp','google_ads','meta_ads','instagram','facebook','linkedin','twitter_x','tiktok','sendgrid_email','freshdesk','intercom','square','shipstation','zoho_crm'];
+          if (BUILTIN_NAMES.includes(tool.name)) {
+            return jsonResponse(res, { error: 'Name conflicts with a built-in tool. Please choose a different name.' }, 400);
+          }
+          // Check for duplicate custom names
+          const existing = (config as any).customTools.findIndex((t: any) => t.name === tool.name);
+          if (existing >= 0) {
+            (config as any).customTools[existing] = { ...(config as any).customTools[existing], ...tool };
+          } else {
+            (config as any).customTools.push(tool);
+          }
+          saveConfig(config);
+          return jsonResponse(res, { tool });
+        } catch (e: any) {
+          return jsonResponse(res, { error: e.message }, 400);
+        }
+      });
+    }
+
+    if (pathname.startsWith('/api/custom-tools/') && req.method === 'DELETE') {
+      const toolName = decodeURIComponent(pathname.split('/')[3]);
+      const { loadConfig, saveConfig } = require('./config');
+      const config = loadConfig();
+      if (!(config as any).customTools) return jsonResponse(res, { error: 'Not found' }, 404);
+      (config as any).customTools = (config as any).customTools.filter((t: any) => t.name !== toolName);
+      saveConfig(config);
+      return jsonResponse(res, { ok: true });
+    }
+
     if (pathname === '/api/logs') {
       return jsonResponse(res, { logs: _state.activity.slice(0, 30) });
     }

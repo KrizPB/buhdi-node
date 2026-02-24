@@ -847,12 +847,18 @@
     },
   };
 
-  // Flatten catalog for lookups
+  // Custom tools loaded from config
+  let customTools = [];
+
+  // Flatten catalog for lookups (includes custom tools)
   function getCatalogTool(toolName) {
     for (const cat of Object.values(TOOL_CATALOG)) {
       const t = cat.tools.find(t => t.name === toolName);
       if (t) return t;
     }
+    // Check custom tools
+    const ct = customTools.find(t => t.name === toolName);
+    if (ct) return { ...ct, credType: ct.authType !== 'none' ? ct.authType : null, custom: true };
     return null;
   }
 
@@ -867,12 +873,37 @@
         const credData = await window.buhdiAPI.credentials();
         state.credentials = credData.credentials || {};
       } catch (e) {
-        // Credentials API may not exist yet
         state.credentials = {};
       }
 
+      // Load custom tools
+      try {
+        const ctData = await window.buhdiAPI.customTools();
+        customTools = ctData.tools || [];
+      } catch (e) {
+        customTools = [];
+      }
+
+      // Merge custom tools into catalog by category
+      const mergedCatalog = {};
+      for (const [catName, cat] of Object.entries(TOOL_CATALOG)) {
+        mergedCatalog[catName] = { ...cat, tools: [...cat.tools] };
+      }
+      for (const ct of customTools) {
+        const catName = ct.category || 'Custom';
+        if (!mergedCatalog[catName]) {
+          mergedCatalog[catName] = { icon: '🔧', tools: [] };
+        }
+        mergedCatalog[catName].tools.push({
+          ...ct,
+          credType: ct.authType !== 'none' ? (ct.authType || 'api_key') : null,
+          credLabel: ct.credLabel || 'API Key',
+          custom: true,
+        });
+      }
+
       let totalTools = 0, nodeTools = 0, cloudTools = 0, activeTools = 0, configuredTools = 0;
-      for (const cat of Object.values(TOOL_CATALOG)) {
+      for (const cat of Object.values(mergedCatalog)) {
         for (const t of cat.tools) {
           totalTools++;
           if (t.node) nodeTools++; else cloudTools++;
@@ -890,11 +921,12 @@
       $('#tools-count').textContent = `${totalTools} tools · ${configuredTools} configured`;
 
       const showcase = $('#tools-showcase');
-      showcase.innerHTML = Object.entries(TOOL_CATALOG).map(([catName, cat]) => {
+      showcase.innerHTML = Object.entries(mergedCatalog).map(([catName, cat]) => {
         const toolCards = cat.tools.map(t => {
           const local = localTools[t.name];
           const cred = state.credentials[t.name];
           const isNode = !!t.node;
+          const isCustom = !!t.custom;
           const isActive = local?.available;
           const isConfigured = !!cred;
 
@@ -909,11 +941,11 @@
             statusText = 'Not installed';
             statusClass = 'unavailable';
           } else {
-            statusText = 'Available via cloud';
+            statusText = isCustom ? 'Click to configure' : 'Available via cloud';
             statusClass = 'available';
           }
 
-          const displayName = t.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          const displayName = t.displayName || t.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
           const canConfigure = !!t.credType;
           const credBadge = isConfigured
             ? `<div class="tool-card-cred has-cred">🔒 ${cred.storageMode === 'blind_custodian' ? 'Portable' : 'Local'}</div>`
@@ -921,15 +953,23 @@
               ? `<div class="tool-card-cred">Click to configure credentials</div>`
               : '';
 
+          const typeTag = isCustom ? 'custom' : (isNode ? 'node' : 'cloud');
+          const typeLabel = isCustom ? 'CUSTOM' : (isNode ? 'NODE' : 'CLOUD');
+          const customActions = isCustom ? `
+            <div class="tool-card-custom-actions">
+              <button class="delete" data-delete-tool="${esc(t.name)}" title="Remove custom tool">🗑</button>
+            </div>` : '';
+
           return `
-            <div class="tool-card" data-tool="${esc(t.name)}" ${canConfigure ? 'data-configurable="true"' : ''}>
+            <div class="tool-card" data-tool="${esc(t.name)}" ${canConfigure ? 'data-configurable="true"' : ''} style="position:relative">
+              ${customActions}
               <div class="tool-card-icon ${isNode ? 'node-tool' : 'cloud-tool'}">
-                ${isNode ? '🖥️' : '☁️'}
+                ${isCustom ? '🔧' : (isNode ? '🖥️' : '☁️')}
               </div>
               <div class="tool-card-info">
                 <div class="tool-card-name">
                   ${esc(displayName)}
-                  <span class="tool-type-tag ${isNode ? 'node' : 'cloud'}">${isNode ? 'NODE' : 'CLOUD'}</span>
+                  <span class="tool-type-tag ${typeTag}">${typeLabel}</span>
                 </div>
                 <div class="tool-card-desc">${esc(t.desc)}</div>
                 <div class="tool-card-status ${statusClass}">${esc(statusText)}${local?.version ? ' · v' + esc(local.version) : ''}</div>
@@ -939,6 +979,13 @@
           `;
         }).join('');
 
+        // Add "Add Custom Tool" card at end of each category
+        const addCard = `
+          <div class="tool-card-add" data-add-category="${esc(catName)}">
+            <span>＋</span> Add Custom Tool
+          </div>
+        `;
+
         return `
           <div class="tools-category">
             <div class="tools-category-header">
@@ -946,14 +993,39 @@
               <span class="tools-category-name">${catName}</span>
               <span class="tools-category-count">${cat.tools.length} tools</span>
             </div>
-            <div class="tools-grid">${toolCards}</div>
+            <div class="tools-grid">${toolCards}${addCard}</div>
           </div>
         `;
       }).join('');
 
       // Bind click handlers for configurable tools
       showcase.querySelectorAll('.tool-card[data-configurable]').forEach(card => {
-        card.addEventListener('click', () => openCredentialModal(card.dataset.tool));
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('[data-delete-tool]')) return; // Don't open modal on delete click
+          openCredentialModal(card.dataset.tool);
+        });
+      });
+
+      // Bind "Add Custom Tool" buttons
+      showcase.querySelectorAll('.tool-card-add').forEach(btn => {
+        btn.addEventListener('click', () => openAddCustomToolModal(btn.dataset.addCategory));
+      });
+
+      // Bind delete buttons for custom tools
+      showcase.querySelectorAll('[data-delete-tool]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const name = btn.dataset.deleteTool;
+          const displayName = name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          if (!confirm(`Remove custom tool "${displayName}"? This will also remove its credentials.`)) return;
+          try {
+            await window.buhdiAPI.customToolDelete(name);
+            try { await window.buhdiAPI.credentialDelete(name); } catch {}
+            loadTools();
+          } catch (err) {
+            alert('Failed to delete: ' + err.message);
+          }
+        });
       });
 
     } catch (err) {
@@ -979,6 +1051,81 @@
 
   function closeCredentialModal() {
     credModal.classList.add('hidden');
+  }
+
+  function openAddCustomToolModal(category) {
+    credModalTitle.textContent = 'Add Custom Tool';
+
+    const categories = Object.keys(TOOL_CATALOG);
+
+    credModalBody.innerHTML = `
+      <div class="cred-form-group">
+        <label>Tool Name *</label>
+        <input type="text" class="cred-input" id="ct-name" placeholder="e.g. My CRM, Notion, Airtable" maxlength="50">
+      </div>
+      <div class="cred-form-group">
+        <label>Description</label>
+        <input type="text" class="cred-input" id="ct-desc" placeholder="What does this tool do?" maxlength="200">
+      </div>
+      <div class="cred-form-group">
+        <label>Category</label>
+        <select class="cred-input" id="ct-category">
+          ${categories.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+          <option value="Custom">Custom</option>
+        </select>
+      </div>
+      <div class="cred-form-group">
+        <label>API Base URL</label>
+        <input type="url" class="cred-input" id="ct-url" placeholder="https://api.example.com/v1">
+        <div class="cred-hint">The base endpoint Buhdi will call</div>
+      </div>
+      <div class="cred-form-group">
+        <label>Authentication Type</label>
+        <select class="cred-input" id="ct-auth">
+          <option value="api_key">API Key</option>
+          <option value="bearer">Bearer Token</option>
+          <option value="oauth">OAuth</option>
+          <option value="none">None (public API)</option>
+        </select>
+      </div>
+      <div class="cred-form-group">
+        <label>Credential Label</label>
+        <input type="text" class="cred-input" id="ct-cred-label" placeholder="e.g. API Key, Access Token" value="API Key" maxlength="50">
+        <div class="cred-hint">What to call the credential field when configuring</div>
+      </div>
+      <div id="ct-status"></div>
+      <div class="cred-actions">
+        <button class="btn-outline" id="ct-cancel">Cancel</button>
+        <button class="btn-primary" id="ct-save">Add Tool</button>
+      </div>
+    `;
+
+    $('#ct-cancel').addEventListener('click', closeCredentialModal);
+    $('#ct-save').addEventListener('click', async () => {
+      const name = $('#ct-name').value.trim();
+      if (!name) {
+        $('#ct-status').innerHTML = '<div class="cred-status error">Tool name is required</div>';
+        return;
+      }
+      $('#ct-status').innerHTML = '<div class="cred-status" style="color:var(--text-muted)">Saving...</div>';
+      try {
+        await window.buhdiAPI.customToolSave({
+          name: name,
+          displayName: name,
+          desc: $('#ct-desc').value.trim(),
+          category: $('#ct-category').value,
+          apiBaseUrl: $('#ct-url').value.trim(),
+          authType: $('#ct-auth').value,
+          credLabel: $('#ct-cred-label').value.trim() || 'API Key',
+        });
+        closeCredentialModal();
+        loadTools();
+      } catch (err) {
+        $('#ct-status').innerHTML = '<div class="cred-status error">Failed: ' + esc(err.message) + '</div>';
+      }
+    });
+
+    credModal.classList.remove('hidden');
   }
 
   function openCredentialModal(toolName) {
