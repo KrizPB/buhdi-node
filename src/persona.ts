@@ -28,6 +28,7 @@ const CLOUD_SYNC_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
 let lastCloudSync = 0;
 let cloudBootstrapCache: CloudBootstrap | null = null;
+let fullSyncComplete = false;
 
 interface CloudBootstrap {
   soul?: string;
@@ -197,6 +198,86 @@ async function fetchCloudBootstrap(): Promise<CloudBootstrap | null> {
 }
 
 /**
+ * Full graph sync for local_first mode.
+ * Paginates through all entities + facts from cloud → hydrates local SQLite.
+ * Called once on startup, then incremental via lastSyncAt.
+ */
+async function fullGraphSync(): Promise<{ entities: number; facts: number; pages: number } | null> {
+  const config = loadConfig() as any;
+  const apiKey = config.memory?.sync?.api_key;
+  const cloudUrl = config.memory?.sync?.cloud_url || 'https://www.mybuhdi.com';
+
+  if (!apiKey || !cloudUrl.startsWith('https://')) return null;
+  if (!isMemoryInitialized()) return null;
+
+  // Read last sync time from cache
+  const syncStatePath = path.join(CACHE_DIR, 'sync-state.json');
+  let lastSyncAt: string | null = null;
+  try {
+    const state = JSON.parse(fs.readFileSync(syncStatePath, 'utf-8'));
+    lastSyncAt = state.lastSyncAt || null;
+  } catch {}
+
+  let cursor: string | null = null;
+  let totalEntities = 0;
+  let totalFacts = 0;
+  let pages = 0;
+
+  try {
+    do {
+      const params = new URLSearchParams({ limit: '200' });
+      if (lastSyncAt) params.set('since', lastSyncAt);
+      if (cursor) params.set('cursor', cursor);
+
+      const res = await fetch(`${cloudUrl}/api/memory/sync?${params}`, {
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!res.ok) {
+        console.warn(`[persona] Full sync failed: ${res.status}`);
+        return null;
+      }
+
+      const json = await res.json() as any;
+      const data = json.data || {};
+      pages++;
+
+      // Hydrate entities with their facts
+      if (Array.isArray(data.entities) && data.entities.length > 0) {
+        const result = hydrateFromCloudBootstrap({
+          entities: data.entities,
+          insights: !cursor ? data.insights : undefined, // Only on first page
+        });
+        totalEntities += result.entities;
+      }
+
+      totalFacts += (data.meta?.factCount || 0);
+      cursor = json.hasMore ? json.cursor : null;
+
+      // Safety cap: max 10 pages (2000 entities)
+      if (pages >= 10) break;
+
+    } while (cursor);
+
+    // Save sync timestamp
+    const syncState = { lastSyncAt: new Date().toISOString(), totalEntities, pages };
+    fs.writeFileSync(syncStatePath, JSON.stringify(syncState, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    fullSyncComplete = true;
+
+    if (totalEntities > 0) {
+      console.log(`[persona] Full graph sync complete: ${totalEntities} entities across ${pages} page(s)`);
+    }
+
+    return { entities: totalEntities, facts: totalFacts, pages };
+
+  } catch (err: any) {
+    console.warn(`[persona] Full graph sync error: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Get cloud bootstrap — from cache or fresh fetch.
  */
 async function getCloudBootstrap(forceFresh = false): Promise<CloudBootstrap | null> {
@@ -233,31 +314,27 @@ export async function buildPersonaPrompt(toolDescriptions?: string): Promise<str
     }
 
     case 'local_first': {
-      // Local persona + cloud memory hydrated into local DB
+      // Local persona + FULL cloud graph hydrated into local DB
       const local = readLocalPersona();
       if (local.soul) parts.push(local.soul);
       if (local.systemPrompt) parts.push(local.systemPrompt);
       if (local.tools) parts.push(local.tools);
 
-      // Pull cloud bootstrap — hydrate local memory DB, NOT the prompt
+      // Full graph sync on first call, incremental after
+      if (!fullSyncComplete) {
+        await fullGraphSync();
+      }
+
+      // Pull cloud bootstrap for persona/directives only (not memory)
       const cloud = await getCloudBootstrap();
       if (cloud) {
-        // Hydrate entities/insights into local SQLite (skips duplicates)
-        if (isMemoryInitialized() && cloud.memory) {
-          hydrateFromCloudBootstrap({
-            entities: Array.isArray(cloud.memory.entities) ? cloud.memory.entities : undefined,
-            insights: Array.isArray(cloud.memory.insights) ? cloud.memory.insights : undefined,
-            relationships: typeof cloud.memory.relationships === 'string' ? cloud.memory.relationships : undefined,
-          });
-        }
-        // Only add lightweight directives to prompt (not full memory dump)
         if (cloud.soul) parts.push('\n## Cloud Personality\n' + sanitizeCloudField(cloud.soul, 1000));
         if (cloud.identity) parts.push('\n## Identity\n' + sanitizeCloudField(cloud.identity, 500));
         if (cloud.directives?.length) {
           parts.push('\n## Directives\n' + cloud.directives.map(d => sanitizeCloudField(d, 1000)).join('\n\n'));
         }
-        parts.push('\n*Cloud memory has been synced to local database. Use memory search for specific context.*');
       }
+      parts.push('\n*Memory synced from cloud to local database. Context retrieved per-message.*');
       break;
     }
 
