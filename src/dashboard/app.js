@@ -437,7 +437,7 @@
     }
   });
 
-  function addChatMessage(role, content, persist = true) {
+  function addChatMessage(role, content, persist = true, modelInfo = null) {
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const isUser = role === 'user';
     const avatar = isUser ? '👤' : '🐻';
@@ -454,6 +454,14 @@
         <div class="msg-content">${rendered}</div>
       </div>
     `;
+
+    // Add model info as a separate DOM element (not injected into content)
+    if (modelInfo) {
+      const metaEl = document.createElement('small');
+      metaEl.style.cssText = 'color:var(--text-muted);display:block;margin-top:4px;';
+      metaEl.textContent = 'via ' + modelInfo;
+      msgEl.querySelector('.msg-content').appendChild(metaEl);
+    }
 
     chatMessages.appendChild(msgEl);
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -1868,10 +1876,8 @@ DEL  /api/credentials/:tool Remove</code></pre>`,
       if (data.toolsUsed?.length) {
         content += `\n\n*Tools used: ${data.toolsUsed.join(', ')}*`;
       }
-      if (data.provider && data.model) {
-        content += `\n\n<small style="color:var(--text-muted)">via ${esc(data.provider)}/${esc(data.model)}</small>`;
-      }
-      addChatMessage(data.role, content, data.ts);
+      const modelInfo = (data.provider && data.model) ? `${esc(data.provider)}/${esc(data.model)}` : null;
+      addChatMessage(data.role, content, data.ts, true, modelInfo);
     }
   });
 
