@@ -33,7 +33,7 @@ interface CloudBootstrap {
   identity?: string;
   user?: string;
   directives?: string[];
-  memory?: { entities?: any[]; facts?: any[]; context?: string };
+  memory?: Record<string, any>;
   config?: any;
   fetchedAt: number;
 }
@@ -234,11 +234,12 @@ export async function buildPersonaPrompt(toolDescriptions?: string): Promise<str
 
       // Try to pull cloud memory context (non-blocking)
       const cloud = await getCloudBootstrap();
-      if (cloud?.memory?.context) {
-        parts.push('\n## Cloud Memory Context\n' + cloud.memory.context);
-      }
-      if (cloud?.directives?.length) {
-        parts.push('\n## Directives\n' + cloud.directives.join('\n'));
+      if (cloud) {
+        const memParts = buildMemorySection(cloud);
+        if (memParts) parts.push(memParts);
+        if (cloud.directives?.length) {
+          parts.push('\n## Directives\n' + cloud.directives.join('\n\n'));
+        }
       }
       break;
     }
@@ -247,14 +248,10 @@ export async function buildPersonaPrompt(toolDescriptions?: string): Promise<str
       // Cloud personality, cached locally for failover
       const cloud = await getCloudBootstrap();
       if (cloud) {
-        if (cloud.soul) parts.push(cloud.soul);
-        if (cloud.identity) parts.push('\n## Identity\n' + cloud.identity);
-        if (cloud.user) parts.push('\n## About the User\n' + cloud.user);
+        const memParts = buildMemorySection(cloud);
+        if (memParts) parts.push(memParts);
         if (cloud.directives?.length) {
-          parts.push('\n## Directives\n' + cloud.directives.join('\n'));
-        }
-        if (cloud.memory?.context) {
-          parts.push('\n## Memory Context\n' + cloud.memory.context);
+          parts.push('\n## Directives\n' + cloud.directives.join('\n\n'));
         }
       } else {
         // Cloud down — fall back to local
@@ -339,6 +336,46 @@ export function getPersonaInfo(): {
     cloudLastSync: lastCloudSync,
     personaDir: PERSONA_DIR,
   };
+}
+
+/** Build a system prompt section from cloud bootstrap memory */
+function buildMemorySection(cloud: CloudBootstrap): string | null {
+  const mem = cloud.memory;
+  if (!mem) return null;
+
+  const sections: string[] = [];
+  sections.push('## Cloud Memory (from mybuhdi.com)');
+  sections.push('You have access to the following knowledge from your cloud memory. Use it to personalize responses.\n');
+
+  if (cloud.soul) {
+    sections.push('### Personality\n' + cloud.soul);
+  }
+  if (cloud.identity) {
+    sections.push('### Identity\n' + cloud.identity);
+  }
+  if (cloud.user) {
+    sections.push('### About the User\n' + cloud.user);
+  }
+  if (mem.entities && typeof mem.entities === 'string' && mem.entities.trim()) {
+    sections.push('### Known Entities\n' + mem.entities.trim());
+  }
+  if (mem.relationships && typeof mem.relationships === 'string' && mem.relationships.trim()) {
+    sections.push('### Relationships\n' + mem.relationships.trim());
+  }
+  if (mem.recentContext && typeof mem.recentContext === 'string' && mem.recentContext.trim()) {
+    sections.push('### Recent Context & Lessons\n' + mem.recentContext.trim());
+  }
+  if (mem.insights && typeof mem.insights === 'string' && mem.insights.trim()) {
+    sections.push('### Insights\n' + mem.insights.trim());
+  }
+  if (mem.beliefs && typeof mem.beliefs === 'string' && mem.beliefs.trim()) {
+    sections.push('### Beliefs\n' + mem.beliefs.trim());
+  }
+  if (mem.agentRoster && typeof mem.agentRoster === 'string' && mem.agentRoster.trim()) {
+    sections.push('### Agent Roster\n' + mem.agentRoster.trim());
+  }
+
+  return sections.length > 2 ? sections.join('\n\n') : null;
 }
 
 // ─── Default Files ───
