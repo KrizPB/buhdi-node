@@ -463,9 +463,13 @@ html, body {
   display: none;
   flex-direction: column;
   height: 100%;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .view.active { display: flex; }
+
+/* Chat view: messages scroll internally, view itself shouldn't */
+#view-chat { overflow: hidden; }
 
 .view-header {
   padding: 16px 24px;
@@ -1186,10 +1190,85 @@ html, body {
   color: var(--text-muted);
   margin-top: 4px;
 }
-.entity-card .entity-facts {
+.entity-card .entity-meta {
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 6px;
+}
+.entity-card-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.entity-expand-icon {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+.entity-card.expanded {
+  border-color: var(--amber-600);
+  background: var(--bg-tertiary);
+}
+.entity-details {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.entity-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  margin: 8px 0 6px;
+}
+.entity-section-title:first-child { margin-top: 0; }
+.entity-facts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.entity-fact {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+.entity-fact-key {
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 80px;
+  flex-shrink: 0;
+}
+.entity-fact-value {
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.entity-rels-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.entity-rel {
+  font-size: 12px;
+  padding: 4px 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  color: var(--text-secondary);
+}
+.entity-rel-type {
+  color: var(--accent);
+  font-weight: 600;
+  margin: 0 4px;
+}
+.entity-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 4px 0;
 }
 .memory-add-form {
   margin-top: 16px;

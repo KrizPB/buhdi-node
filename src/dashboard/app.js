@@ -1391,28 +1391,69 @@
 
       list.innerHTML = entities.map(e => `
         <div class="entity-card" data-id="${e.id}">
-          <span class="entity-name">${escapeHtml(e.name)}</span>
-          <span class="entity-type">${escapeHtml(e.type || 'unknown')}</span>
+          <div class="entity-card-header">
+            <span class="entity-name">${escapeHtml(e.name)}</span>
+            <span class="entity-type">${escapeHtml(e.type || 'unknown')}</span>
+            <span class="entity-expand-icon">▸</span>
+          </div>
           ${e.description ? `<div class="entity-desc">${escapeHtml(e.description)}</div>` : ''}
-          <div class="entity-facts">Updated: ${new Date(e.updated_at).toLocaleDateString()}</div>
+          <div class="entity-meta">Updated: ${new Date(e.updated_at).toLocaleDateString()}</div>
+          <div class="entity-details" style="display:none"></div>
         </div>
       `).join('');
 
-      // Click to expand entity
+      // Click to expand/collapse entity details
       list.querySelectorAll('.entity-card').forEach(card => {
         card.addEventListener('click', async () => {
           const id = card.dataset.id;
-          try {
-            const result = await buhdiAPI.memoryEntity(id);
-            const entity = result.data;
-            const facts = (entity.facts || []).map(f => `  • ${f.key}: ${f.value}`).join('\n');
-            const rels = (entity.relationships || []).map(r =>
-              `  • ${r.source_name || r.source_entity_id} → ${r.relationship_type} → ${r.target_name || r.target_entity_id}`
-            ).join('\n');
-            alert(`${entity.name} (${entity.type || 'unknown'})\n${entity.description || ''}\n\nFacts:\n${facts || '  (none)'}\n\nRelationships:\n${rels || '  (none)'}`);
-          } catch (err) {
-            alert('Error loading entity: ' + err.message);
+          const details = card.querySelector('.entity-details');
+          const icon = card.querySelector('.entity-expand-icon');
+
+          // Toggle collapse
+          if (details.style.display !== 'none') {
+            details.style.display = 'none';
+            icon.textContent = '▸';
+            card.classList.remove('expanded');
+            return;
           }
+
+          // Load and expand
+          if (!details.dataset.loaded) {
+            details.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">Loading...</div>';
+            details.style.display = 'block';
+            try {
+              const result = await buhdiAPI.memoryEntity(id);
+              const entity = result.data;
+              const facts = entity.facts || [];
+              const rels = entity.relationships || [];
+
+              let html = '';
+              if (facts.length > 0) {
+                html += '<div class="entity-section-title">Facts</div>';
+                html += '<div class="entity-facts-list">' + facts.map(f =>
+                  `<div class="entity-fact"><span class="entity-fact-key">${escapeHtml(f.key)}</span><span class="entity-fact-value">${escapeHtml(f.value)}</span></div>`
+                ).join('') + '</div>';
+              } else {
+                html += '<div class="entity-section-title">Facts</div><div class="entity-empty">No facts stored</div>';
+              }
+
+              if (rels.length > 0) {
+                html += '<div class="entity-section-title">Relationships</div>';
+                html += '<div class="entity-rels-list">' + rels.map(r =>
+                  `<div class="entity-rel">${escapeHtml(r.source_name || '?')} <span class="entity-rel-type">${escapeHtml(r.relationship_type)}</span> ${escapeHtml(r.target_name || '?')}</div>`
+                ).join('') + '</div>';
+              }
+
+              details.innerHTML = html || '<div class="entity-empty">No additional details</div>';
+              details.dataset.loaded = 'true';
+            } catch (err) {
+              details.innerHTML = `<div style="color:#ef4444;font-size:12px;padding:8px 0">Failed to load: ${escapeHtml(err.message)}</div>`;
+            }
+          } else {
+            details.style.display = 'block';
+          }
+          icon.textContent = '▾';
+          card.classList.add('expanded');
         });
       });
     } catch (err) {
