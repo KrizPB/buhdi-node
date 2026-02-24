@@ -7,7 +7,7 @@
 
 import * as path from 'path';
 import { initDatabase, closeDatabase, getStats } from './database';
-import { configureEmbeddings, checkEmbeddingHealth, isEmbeddingAvailable } from './embeddings';
+import { configureEmbeddings, checkEmbeddingHealth, isEmbeddingAvailable, getEmbeddingProvider } from './embeddings';
 import { MemoryConfig, MemoryStatus } from './types';
 
 let initialized = false;
@@ -20,9 +20,6 @@ export async function initMemory(config?: Partial<MemoryConfig>): Promise<void> 
   const defaults: MemoryConfig = {
     enabled: true,
     db_path: path.join(homeDir, '.buhdi-node', 'memory.db'),
-    embedding_model: 'nomic-embed-text',
-    embedding_dimensions: 768,
-    ollama_url: 'http://localhost:11434',
     owner_id: 'local',
   };
 
@@ -37,20 +34,23 @@ export async function initMemory(config?: Partial<MemoryConfig>): Promise<void> 
   initDatabase(memoryConfig.db_path);
   console.log(`[memory] Database initialized at ${memoryConfig.db_path}`);
 
-  // Configure embeddings
+  // Configure embeddings — supports any provider (Ollama, LM Studio, LocalAI, vLLM, etc.)
+  const embConfig = memoryConfig.embedding || {};
   configureEmbeddings({
-    ollama_url: memoryConfig.ollama_url,
-    model: memoryConfig.embedding_model,
-    dimensions: memoryConfig.embedding_dimensions,
+    provider: embConfig.provider,
+    endpoint: embConfig.endpoint || memoryConfig.ollama_url,
+    model: embConfig.model || memoryConfig.embedding_model || 'nomic-embed-text',
+    dimensions: embConfig.dimensions || memoryConfig.embedding_dimensions || 768,
+    api_key: embConfig.api_key,
   });
 
-  // Check if Ollama has the embedding model
+  // Auto-detect and check embedding provider
   const embeddingOk = await checkEmbeddingHealth();
   if (embeddingOk) {
-    console.log(`[memory] Embeddings ready (${memoryConfig.embedding_model} via Ollama)`);
+    console.log(`[memory] Embeddings ready via ${getEmbeddingProvider()}`);
   } else {
     console.log(`[memory] Embeddings unavailable — semantic search will fall back to text matching`);
-    console.log(`[memory] To enable: ollama pull ${memoryConfig.embedding_model}`);
+    console.log(`[memory] To enable: run any local LLM server with embedding support (Ollama, LM Studio, LocalAI, etc.)`);
   }
 
   initialized = true;
@@ -85,7 +85,7 @@ export function getMemoryStatus(): MemoryStatus {
     journal_pending: stats.journal_pending,
     db_size_bytes: dbSize,
     last_mirror_sync: null, // TODO: read from sync_state
-    embedding_provider: isEmbeddingAvailable() ? 'ollama' : 'none',
+    embedding_provider: isEmbeddingAvailable() ? getEmbeddingProvider() : 'none',
   };
 }
 

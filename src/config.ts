@@ -51,10 +51,17 @@ export interface BuhdiConfig {
   memory?: {
     enabled?: boolean;
     db_path?: string;
-    embedding_model?: string;
-    embedding_dimensions?: number;
-    ollama_url?: string;
     owner_id?: string;
+    embedding?: {
+      provider?: string;         // 'ollama' | 'openai-compat' | auto-detect
+      endpoint?: string;         // Any local embedding server URL
+      model?: string;            // Model name
+      dimensions?: number;
+      api_key?: string;
+    };
+    // Legacy compat
+    embedding_model?: string;
+    ollama_url?: string;
     sync?: {
       enabled: boolean;
       cloud_url: string;

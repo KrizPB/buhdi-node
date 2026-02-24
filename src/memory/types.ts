@@ -148,10 +148,18 @@ export interface MemoryStatus {
 export interface MemoryConfig {
   enabled: boolean;
   db_path: string;             // Default: ~/.buhdi-node/memory.db
-  embedding_model: string;     // Default: nomic-embed-text
-  embedding_dimensions: number; // Default: 768 for nomic-embed-text
-  ollama_url: string;          // Default: http://localhost:11434
   owner_id: string;            // Default: 'local'
+  embedding?: {
+    provider?: string;         // 'ollama' | 'openai-compat' | auto-detect if empty
+    endpoint?: string;         // URL of embedding service (any OpenAI-compat or Ollama)
+    model?: string;            // Model name (default: nomic-embed-text)
+    dimensions?: number;       // Vector dimensions (default: 768)
+    api_key?: string;          // API key for the embedding endpoint (if needed)
+  };
+  // Legacy compat
+  embedding_model?: string;
+  embedding_dimensions?: number;
+  ollama_url?: string;
   sync?: {
     enabled: boolean;
     cloud_url: string;

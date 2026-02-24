@@ -12,49 +12,107 @@ import * as crypto from 'crypto';
 
 // ---- Configuration ----
 
-let ollamaUrl = 'http://localhost:11434';
+type EmbeddingProvider = 'ollama' | 'openai-compat' | 'none';
+
+let provider: EmbeddingProvider = 'none';
+let endpointUrl = '';
 let embeddingModel = 'nomic-embed-text';
 let embeddingDimensions = 768;
+let apiKey = '';
 let isAvailable = false;
 
 export function configureEmbeddings(config: {
-  ollama_url?: string;
+  provider?: string;       // 'ollama' | 'openai-compat' | auto-detect
+  endpoint?: string;       // Any local URL (Ollama, LM Studio, LocalAI, vLLM, etc.)
   model?: string;
   dimensions?: number;
+  api_key?: string;
+  // Legacy
+  ollama_url?: string;
 }): void {
-  if (config.ollama_url) {
-    // M3-FIX: Only allow localhost Ollama URLs to prevent SSRF
-    try {
-      const parsed = new URL(config.ollama_url);
-      const host = parsed.hostname.toLowerCase();
-      if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
-        ollamaUrl = config.ollama_url;
-      } else {
-        console.warn(`[memory] Ignoring non-localhost ollama_url: ${config.ollama_url}`);
-      }
-    } catch {
-      console.warn(`[memory] Invalid ollama_url: ${config.ollama_url}`);
-    }
-  }
   if (config.model) embeddingModel = config.model;
   if (config.dimensions) embeddingDimensions = config.dimensions;
+  if (config.api_key) apiKey = config.api_key;
+
+  // Determine endpoint
+  const rawUrl = config.endpoint || config.ollama_url || '';
+  if (rawUrl) {
+    // Validate localhost only to prevent SSRF
+    try {
+      const parsed = new URL(rawUrl);
+      const host = parsed.hostname.toLowerCase();
+      if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+        endpointUrl = rawUrl;
+      } else {
+        console.warn(`[memory] Ignoring non-localhost embedding endpoint: ${rawUrl}`);
+        return;
+      }
+    } catch {
+      console.warn(`[memory] Invalid embedding endpoint: ${rawUrl}`);
+      return;
+    }
+  }
+
+  // Determine provider type
+  if (config.provider === 'ollama' || config.provider === 'openai-compat') {
+    provider = config.provider;
+  } else if (endpointUrl) {
+    // Auto-detect: Ollama uses port 11434 by default
+    provider = endpointUrl.includes(':11434') ? 'ollama' : 'openai-compat';
+  }
 }
 
 // ---- Health Check ----
 
 export async function checkEmbeddingHealth(): Promise<boolean> {
+  if (!endpointUrl) {
+    // Try auto-detect common local endpoints
+    const candidates = [
+      { url: 'http://localhost:11434', type: 'ollama' as EmbeddingProvider },
+      { url: 'http://localhost:1234', type: 'openai-compat' as EmbeddingProvider },  // LM Studio
+      { url: 'http://localhost:8080', type: 'openai-compat' as EmbeddingProvider },  // LocalAI / llama.cpp
+    ];
+    for (const c of candidates) {
+      try {
+        const testUrl = c.type === 'ollama' ? `${c.url}/api/tags` : `${c.url}/v1/models`;
+        const resp = await fetch(testUrl, { signal: AbortSignal.timeout(2000) });
+        if (resp.ok) {
+          endpointUrl = c.url;
+          provider = c.type;
+          console.log(`[memory] Auto-detected ${c.type} at ${c.url}`);
+          break;
+        }
+      } catch { continue; }
+    }
+  }
+
+  if (!endpointUrl || provider === 'none') {
+    isAvailable = false;
+    return false;
+  }
+
   try {
-    const resp = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
-    if (!resp.ok) return (isAvailable = false);
-
-    const data = await resp.json() as { models?: Array<{ name: string }> };
-    const models = data.models || [];
-    isAvailable = models.some((m: { name: string }) =>
-      m.name === embeddingModel || m.name.startsWith(embeddingModel + ':')
-    );
-
-    if (!isAvailable) {
-      console.log(`[memory] Embedding model "${embeddingModel}" not found in Ollama. Available: ${models.map((m: { name: string }) => m.name).join(', ')}`);
+    if (provider === 'ollama') {
+      const resp = await fetch(`${endpointUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      if (!resp.ok) return (isAvailable = false);
+      const data = await resp.json() as { models?: Array<{ name: string }> };
+      const models = (data.models || []).map((m: { name: string }) => m.name);
+      isAvailable = models.some(m => m === embeddingModel || m.startsWith(embeddingModel + ':'));
+      if (!isAvailable) {
+        // Try any model that looks like an embedding model
+        const embLike = models.find(m => m.includes('embed') || m.includes('minilm') || m.includes('bge') || m.includes('e5'));
+        if (embLike) { embeddingModel = embLike; isAvailable = true; }
+      }
+      if (!isAvailable) console.log(`[memory] No embedding model found. Available: ${models.join(', ')}`);
+    } else {
+      // OpenAI-compatible: just check if endpoint responds
+      const headers: Record<string, string> = {};
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      const resp = await fetch(`${endpointUrl}/v1/models`, {
+        headers, signal: AbortSignal.timeout(3000)
+      });
+      isAvailable = resp.ok;
+      if (!isAvailable) console.log(`[memory] Embedding endpoint not responding: ${endpointUrl}`);
     }
     return isAvailable;
   } catch {
@@ -67,25 +125,47 @@ export function isEmbeddingAvailable(): boolean {
   return isAvailable;
 }
 
+export function getEmbeddingProvider(): string {
+  return isAvailable ? `${provider} (${endpointUrl})` : 'none';
+}
+
 // ---- Generate Embedding ----
 
 export async function generateEmbedding(text: string): Promise<Float32Array | null> {
   if (!isAvailable) return null;
 
   try {
-    const resp = await fetch(`${ollamaUrl}/api/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: embeddingModel, input: text }),
-      signal: AbortSignal.timeout(10000),
-    });
+    let embedding: number[];
 
-    if (!resp.ok) return null;
+    if (provider === 'ollama') {
+      // Ollama native API
+      const resp = await fetch(`${endpointUrl}/api/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: embeddingModel, input: text }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json() as { embeddings?: number[][] };
+      if (!data.embeddings?.[0]) return null;
+      embedding = data.embeddings[0];
+    } else {
+      // OpenAI-compatible API (LM Studio, LocalAI, vLLM, llama.cpp, etc.)
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      const resp = await fetch(`${endpointUrl}/v1/embeddings`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: embeddingModel, input: text }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json() as { data?: Array<{ embedding: number[] }> };
+      if (!data.data?.[0]?.embedding) return null;
+      embedding = data.data[0].embedding;
+    }
 
-    const data = await resp.json() as { embeddings?: number[][] };
-    if (!data.embeddings?.[0]) return null;
-
-    return new Float32Array(data.embeddings[0]);
+    return new Float32Array(embedding);
   } catch (err) {
     console.error('[memory] Embedding generation failed:', (err as Error).message);
     return null;
