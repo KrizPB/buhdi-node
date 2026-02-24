@@ -141,6 +141,18 @@ async function runConnect(apiKey: string, isDaemon = false): Promise<void> {
       });
     });
 
+    // Initialize scheduler
+    import('./scheduler').then(async ({ initScheduler }) => {
+      const { addActivity } = await import('./health');
+      const configDir = process.env.BUHDI_NODE_CONFIG_DIR || path.join(os.homedir(), '.buhdi-node');
+      initScheduler(configDir, addActivity, {
+        allowScripts: (config as any).scheduler?.allowScripts === true,
+      });
+    }).catch((err: any) => {
+      if (isDaemon) getLogger().warn('Scheduler init error: ' + err.message);
+      else console.warn('⚠️  Scheduler init:', err.message);
+    });
+
     // Initialize local memory
     import('./memory').then(({ initMemory }) => {
       const memConfig: any = {};

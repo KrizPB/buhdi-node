@@ -876,6 +876,67 @@ html, body {
   outline: none;
 }
 
+/* ---- Schedules ---- */
+.schedule-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.schedule-form .form-group {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.schedule-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.schedule-card .sched-status {
+  font-size: 18px;
+}
+.schedule-card .sched-info {
+  flex: 1;
+}
+.schedule-card .sched-name {
+  font-weight: 600;
+  color: var(--text);
+}
+.schedule-card .sched-cron {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--amber);
+  margin-left: 8px;
+}
+.schedule-card .sched-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.schedule-card .sched-actions {
+  display: flex;
+  gap: 6px;
+}
+.schedule-card .sched-actions button {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.schedule-card .sched-actions button:hover {
+  border-color: var(--amber);
+}
+
 /* ---- Editor ---- */
 .editor-layout {
   flex: 1;

@@ -45,6 +45,9 @@ export interface BuhdiConfig {
     maxLatencyMs?: number;
     retries?: number;
   };
+  scheduler?: {
+    allowScripts?: boolean;    // Default false — must explicitly enable shell commands
+  };
   memory?: {
     enabled?: boolean;
     db_path?: string;

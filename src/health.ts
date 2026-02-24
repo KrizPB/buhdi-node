@@ -111,9 +111,9 @@ export function startHealthServer(port: number): http.Server | null {
   function requireAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
     // Static files and health check don't need auth
     // API endpoints require Bearer token
+    // H3-FIX: Only accept Bearer header for API auth (no query string tokens for API endpoints)
     const authHeader = req.headers.authorization || '';
-    const queryToken = new URL(req.url || '/', `http://localhost:${port}`).searchParams.get('token');
-    const token = authHeader.replace(/^Bearer\s+/i, '') || queryToken || '';
+    const token = authHeader.replace(/^Bearer\s+/i, '') || '';
     if (!dashToken || token === dashToken) return true;
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Unauthorized' }));
@@ -529,6 +529,97 @@ export function startHealthServer(port: number): http.Server | null {
         }
       })();
       return;
+    }
+
+    // ---- Scheduler API ----
+    if (pathname === '/api/schedules' && req.method === 'GET') {
+      try {
+        const { listSchedules } = require('./scheduler');
+        return jsonResponse(res, { data: listSchedules() });
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    if (pathname === '/api/schedules' && req.method === 'POST') {
+      return readBody(req, (body) => {
+        try {
+          const { createSchedule } = require('./scheduler');
+          const input = JSON.parse(body);
+          if (!input.name || !input.cron || !input.action) {
+            return jsonResponse(res, { error: 'Missing name, cron, or action' }, 400);
+          }
+          if (input.name.length > 200) return jsonResponse(res, { error: 'Name too long (max 200)' }, 400);
+          const schedule = createSchedule(input);
+          addActivity('⏰', `Schedule created: ${schedule.name}`);
+          jsonResponse(res, { data: schedule }, 201);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 400);
+        }
+      });
+    }
+
+    if (pathname?.startsWith('/api/schedules/') && req.method === 'GET') {
+      try {
+        const id = pathname.slice('/api/schedules/'.length).split('/')[0];
+        const { getSchedule } = require('./scheduler');
+        const schedule = getSchedule(id);
+        if (!schedule) return jsonResponse(res, { error: 'Not found' }, 404);
+        return jsonResponse(res, { data: schedule });
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    if (pathname?.startsWith('/api/schedules/') && req.method === 'PUT') {
+      return readBody(req, (body) => {
+        try {
+          const id = pathname!.slice('/api/schedules/'.length).split('/')[0];
+          const { updateSchedule } = require('./scheduler');
+          const input = JSON.parse(body);
+          const schedule = updateSchedule(id, input);
+          if (!schedule) return jsonResponse(res, { error: 'Not found' }, 404);
+          jsonResponse(res, { data: schedule });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 400);
+        }
+      });
+    }
+
+    if (pathname?.startsWith('/api/schedules/') && pathname.endsWith('/run') && req.method === 'POST') {
+      (async () => {
+        try {
+          const id = pathname!.slice('/api/schedules/'.length).replace('/run', '');
+          const { runScheduleNow } = require('./scheduler');
+          const result = await runScheduleNow(id);
+          jsonResponse(res, { data: result });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 400);
+        }
+      })();
+      return;
+    }
+
+    if (pathname?.startsWith('/api/schedules/') && req.method === 'DELETE') {
+      try {
+        const id = pathname.slice('/api/schedules/'.length);
+        const { deleteSchedule } = require('./scheduler');
+        const ok = deleteSchedule(id);
+        if (!ok) return jsonResponse(res, { error: 'Not found' }, 404);
+        addActivity('🗑️', `Schedule deleted: ${id}`);
+        return jsonResponse(res, { ok: true });
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    if (pathname === '/api/scheduler/status' && req.method === 'GET') {
+      try {
+        const { getSchedulerStatus } = require('./scheduler');
+        return jsonResponse(res, getSchedulerStatus());
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
     }
 
     // ---- Agent API ----

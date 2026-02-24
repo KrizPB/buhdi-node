@@ -139,7 +139,41 @@
 
         <!-- Jobs View -->
         <div class="view" id="view-jobs">
-          <header class="view-header"><h1>📋 Jobs & Tasks</h1></header>
+          <header class="view-header">
+            <h1>📋 Jobs & Schedules</h1>
+            <span class="header-badge" id="scheduler-status-badge">Loading...</span>
+          </header>
+
+          <!-- Schedules Section -->
+          <section class="dash-section">
+            <h2>⏰ Schedules
+              <button id="schedule-add-toggle" class="btn btn-secondary" style="float:right;font-size:11px;">+ New Schedule</button>
+            </h2>
+
+            <!-- Add Schedule Form (hidden by default) -->
+            <div id="schedule-add-form" style="display:none;" class="schedule-form">
+              <div class="form-group">
+                <input type="text" id="sched-name" placeholder="Name (e.g. Email check)" class="form-input" style="flex:2">
+                <input type="text" id="sched-cron" placeholder="Cron (e.g. */30 * * * *)" class="form-input" style="flex:1">
+                <select id="sched-action-type" class="form-input" style="flex:1">
+                  <option value="agent">Agent Goal</option>
+                  <option value="tool">Tool</option>
+                  <option value="webhook">Webhook</option>
+                  <option value="script">Script</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <input type="text" id="sched-action-value" placeholder="Goal / command / URL..." class="form-input" style="flex:3">
+                <button id="schedule-create-btn" class="btn btn-primary">Create</button>
+              </div>
+            </div>
+
+            <div id="schedules-list" class="schedule-list">
+              <div class="activity-empty">No schedules yet.</div>
+            </div>
+          </section>
+
+          <!-- Running Tasks -->
           <section class="dash-section">
             <h2>Running</h2>
             <div id="jobs-running" class="job-list"><div class="activity-empty">No running tasks</div></div>
