@@ -54,6 +54,7 @@
         <button class="top-nav-btn" data-view="jobs">Jobs</button>
         <button class="top-nav-btn" data-view="tools">Tools</button>
         <button class="top-nav-btn" data-view="memory">Memory</button>
+        <button class="top-nav-btn" data-view="docs">Docs</button>
         <button class="top-nav-btn" data-view="editor">Config</button>
         <button class="top-nav-btn" data-view="settings">Settings</button>
       </nav>
@@ -67,39 +68,23 @@
 
     <!-- Layout below header -->
     <div id="layout">
-      <!-- Left Sidebar -->
+      <!-- Left Sidebar — Chat History (matches mybuhdi.com pattern) -->
       <nav id="sidebar">
-        <div class="sidebar-section-label">Navigation</div>
-        <button class="nav-btn active" data-view="chat">
-          <span class="nav-icon">💬</span>
-          <span class="nav-label">Chat</span>
-        </button>
-        <button class="nav-btn" data-view="dashboard">
-          <span class="nav-icon">📊</span>
-          <span class="nav-label">Dashboard</span>
-        </button>
-        <button class="nav-btn" data-view="jobs">
-          <span class="nav-icon">📋</span>
-          <span class="nav-label">Jobs</span>
-        </button>
-        <button class="nav-btn" data-view="tools">
-          <span class="nav-icon">🔧</span>
-          <span class="nav-label">Tools</span>
-        </button>
-        <button class="nav-btn" data-view="memory">
-          <span class="nav-icon">🧠</span>
-          <span class="nav-label">Memory</span>
-        </button>
-        <button class="nav-btn" data-view="editor">
-          <span class="nav-icon">📖</span>
-          <span class="nav-label">Config</span>
-        </button>
-        <button class="nav-btn" data-view="settings">
-          <span class="nav-icon">⚙️</span>
-          <span class="nav-label">Settings</span>
-        </button>
-        <div class="sidebar-spacer"></div>
-        <div class="sidebar-node-info">
+        <div class="sidebar-header">
+          <span class="sidebar-title">Chats</span>
+          <div class="sidebar-header-actions">
+            <button id="sidebar-new-chat" class="sidebar-icon-btn" title="New Chat">+</button>
+            <button id="sidebar-collapse" class="sidebar-icon-btn" title="Collapse">«</button>
+          </div>
+        </div>
+        <div id="chat-list" class="chat-list">
+          <div class="chat-list-empty">
+            <div class="chat-list-empty-icon">💬</div>
+            <div class="chat-list-empty-text">No chats yet</div>
+            <button id="chat-list-start" class="chat-list-start">Start a new chat →</button>
+          </div>
+        </div>
+        <div class="sidebar-footer">
           <div class="sidebar-node-name" id="sidebar-node-name">Node</div>
           <div class="sidebar-node-version" id="sidebar-node-version">v0.3.0</div>
         </div>
@@ -299,6 +284,26 @@
               <button id="entity-add-btn" class="btn btn-primary">Create Entity</button>
             </div>
           </details>
+        </div>
+
+        <!-- Docs View -->
+        <div class="view" id="view-docs">
+          <header class="view-header"><h1>📚 Documentation</h1></header>
+          <div class="docs-layout">
+            <nav class="docs-nav">
+              <button class="docs-nav-btn active" data-doc="overview">Overview</button>
+              <button class="docs-nav-btn" data-doc="config">Configuration</button>
+              <button class="docs-nav-btn" data-doc="providers">AI Providers</button>
+              <button class="docs-nav-btn" data-doc="memory">Local Memory</button>
+              <button class="docs-nav-btn" data-doc="tools">Tool Plugins</button>
+              <button class="docs-nav-btn" data-doc="scheduler">Scheduler</button>
+              <button class="docs-nav-btn" data-doc="security">Security</button>
+              <button class="docs-nav-btn" data-doc="api">API Reference</button>
+            </nav>
+            <div class="docs-content" id="docs-content">
+              <!-- Populated by JS -->
+            </div>
+          </div>
         </div>
 
         <!-- Editor View -->

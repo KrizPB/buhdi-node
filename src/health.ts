@@ -314,6 +314,83 @@ export function startHealthServer(port: number): http.Server | null {
       return;
     }
 
+    // ---- Chat Sessions API ----
+    if (pathname === '/api/chats' && req.method === 'GET') {
+      try {
+        const { listChats } = require('./chats');
+        return jsonResponse(res, { data: listChats() });
+      } catch (err: any) {
+        return jsonResponse(res, { data: [] });
+      }
+    }
+
+    if (pathname === '/api/chats' && req.method === 'POST') {
+      return readBody(req, (body) => {
+        try {
+          const { createChat } = require('./chats');
+          const { title } = body ? JSON.parse(body) : {};
+          const chat = createChat(title);
+          jsonResponse(res, { data: chat }, 201);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname?.startsWith('/api/chats/') && pathname.endsWith('/messages') && req.method === 'GET') {
+      try {
+        const id = pathname.slice('/api/chats/'.length).replace('/messages', '');
+        const { getChatMessages } = require('./chats');
+        return jsonResponse(res, { data: getChatMessages(id) });
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    if (pathname?.startsWith('/api/chats/') && pathname.endsWith('/messages') && req.method === 'POST') {
+      return readBody(req, (body) => {
+        try {
+          const id = pathname!.slice('/api/chats/'.length).replace('/messages', '');
+          const { addMessage } = require('./chats');
+          const msg = JSON.parse(body);
+          if (!msg.role || !msg.content) return jsonResponse(res, { error: 'Missing role or content' }, 400);
+          if (msg.content.length > 50000) return jsonResponse(res, { error: 'Message too long (max 50000)' }, 400);
+          msg.ts = msg.ts || new Date().toISOString();
+          addMessage(id, msg);
+          jsonResponse(res, { ok: true });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname?.startsWith('/api/chats/') && !pathname.includes('/messages') && req.method === 'PUT') {
+      return readBody(req, (body) => {
+        try {
+          const id = pathname!.slice('/api/chats/'.length);
+          const { updateChat } = require('./chats');
+          const updates = JSON.parse(body);
+          const chat = updateChat(id, updates);
+          if (!chat) return jsonResponse(res, { error: 'Not found' }, 404);
+          jsonResponse(res, { data: chat });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname?.startsWith('/api/chats/') && !pathname.includes('/messages') && req.method === 'DELETE') {
+      try {
+        const id = pathname.slice('/api/chats/'.length);
+        const { deleteChat } = require('./chats');
+        const ok = deleteChat(id);
+        if (!ok) return jsonResponse(res, { error: 'Not found' }, 404);
+        return jsonResponse(res, { ok: true });
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
     // ---- Wizard API ----
     if (pathname === '/api/wizard/status' && req.method === 'GET') {
       (async () => {

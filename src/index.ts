@@ -141,6 +141,12 @@ async function runConnect(apiKey: string, isDaemon = false): Promise<void> {
       });
     });
 
+    // Initialize chat persistence
+    import('./chats').then(({ initChats }) => {
+      const configDir = process.env.BUHDI_NODE_CONFIG_DIR || path.join(os.homedir(), '.buhdi-node');
+      initChats(configDir);
+    }).catch(() => {});
+
     // Initialize scheduler
     import('./scheduler').then(async ({ initScheduler }) => {
       const { addActivity } = await import('./health');
