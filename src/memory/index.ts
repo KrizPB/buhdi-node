@@ -146,8 +146,8 @@ export function hydrateFromCloudBootstrap(cloudMemory: {
               );
               for (const f of ent.facts) {
                 if (!existingFacts.has(f.key.toLowerCase())) {
-                  db.prepare('INSERT INTO facts (id, entity_id, owner_id, key, value, is_dirty) VALUES (?, ?, ?, ?, ?, 0)')
-                    .run(crypto.randomUUID(), existingEntity.id, ownerId, sanitizeForStorage(f.key, 200), sanitizeForStorage(f.value, 1000));
+                  db.prepare('INSERT INTO facts (id, entity_id, key, value, source, created_at, is_dirty) VALUES (?, ?, ?, ?, ?, ?, 0)')
+                    .run(crypto.randomUUID(), existingEntity.id, sanitizeForStorage(f.key, 200), sanitizeForStorage(f.value, 1000), 'cloud-sync', new Date().toISOString());
                 }
               }
             }
