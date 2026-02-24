@@ -1116,7 +1116,7 @@
       <div class="cred-form-group">
         <label>${label}</label>
         <div class="cred-input-row">
-          <input type="password" class="cred-input" id="cred-key-input" placeholder="${label}" autocomplete="off">
+          <input type="password" class="cred-input" id="cred-key-input" placeholder="${label}" autocomplete="new-password" data-1p-ignore data-lpignore="true">
           <button class="btn-sm" id="cred-toggle-vis" title="Show/hide">👁️</button>
         </div>
         <div class="cred-hint">${hint}</div>
