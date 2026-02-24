@@ -409,8 +409,12 @@ export async function syncCloudPersona(): Promise<{ ok: boolean; error?: string 
 /**
  * Manual trigger for full graph sync from cloud → local SQLite.
  * Called from dashboard "Sync Now" button.
+ * Always does a FULL sync (clears lastSyncAt) so new facts merge into existing entities.
  */
 export async function fullGraphSyncManual(): Promise<{ entities: number; facts: number; pages: number } | null> {
+  // Clear sync state to force full pull
+  const syncStatePath = path.join(CACHE_DIR, 'sync-state.json');
+  try { fs.unlinkSync(syncStatePath); } catch {}
   return fullGraphSync();
 }
 
