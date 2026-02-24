@@ -430,14 +430,16 @@ export function startDashboardServer(port: number): http.Server | null {
     });
   });
 
-  server.listen(port, '127.0.0.1', () => {
-    // logged by caller
-  });
-
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`⚠️  Dashboard port ${port} already in use`);
+      console.warn(`⚠️  Dashboard port ${port} in use — skipping dashboard server`);
+    } else {
+      console.error(`⚠️  Dashboard server error: ${err.code || err.message}`);
     }
+  });
+
+  server.listen(port, '127.0.0.1', () => {
+    // logged by caller
   });
 
   return server;

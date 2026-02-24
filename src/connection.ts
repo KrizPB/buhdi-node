@@ -36,8 +36,8 @@ const WS_FAILURE_THRESHOLD = 5;
 
 // Internal watchdog
 const WATCHDOG_CHECK_INTERVAL = 10 * 60 * 1000; // 10 minutes
-const WATCHDOG_STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes without successful poll = stale
-const WATCHDOG_MAX_UPTIME = 6 * 60 * 60 * 1000; // 6 hours — clean restart
+const WATCHDOG_STALE_THRESHOLD = 15 * 60 * 1000; // 15 minutes without successful activity = stale (was 5m, too aggressive for idle nodes)
+const WATCHDOG_MAX_UPTIME = 24 * 60 * 60 * 1000; // 24 hours — clean restart (was 6h, too frequent)
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -272,6 +272,7 @@ export class NodeConnection extends EventEmitter {
 
     this.ws.on('pong', () => {
       this.awaitingPong = false;
+      this.lastSuccessfulPoll = Date.now(); // Pong = connection alive, don't let watchdog kill it
       if (this.pongTimer) {
         clearTimeout(this.pongTimer);
         this.pongTimer = null;
@@ -318,6 +319,7 @@ export class NodeConnection extends EventEmitter {
 
       case 'ping':
         this.wsSend({ type: 'pong' });
+        this.lastSuccessfulPoll = Date.now(); // Server ping = connection alive
         break;
 
       case 'task':
@@ -683,7 +685,7 @@ export class NodeConnection extends EventEmitter {
 
   private startWatchdog(): void {
     if (this.watchdogTimer) return;
-    console.log('🐕 Watchdog started (stale check every 10m, max uptime 6h)');
+    console.log('🐕 Watchdog started (stale check every 10m, max uptime 24h)');
     this.watchdogTimer = setInterval(() => this.watchdogCheck(), WATCHDOG_CHECK_INTERVAL);
   }
 
@@ -699,12 +701,19 @@ export class NodeConnection extends EventEmitter {
     const uptime = now - this.startedAt;
     const sincePoll = now - this.lastSuccessfulPoll;
 
-    // Max uptime: clean restart — OS service manager will restart us
+    // Max uptime: force a fresh WS reconnect (don't exit — Windows schtasks won't restart us reliably)
     if (uptime >= WATCHDOG_MAX_UPTIME) {
       const hours = Math.round(uptime / 3600000 * 10) / 10;
-      console.log(`🐕 Watchdog: max uptime reached (${hours}h) — restarting`);
-      this.stop();
-      process.exit(0); // Clean exit — SCM/systemd/launchd restarts us
+      console.log(`🐕 Watchdog: max uptime reached (${hours}h) — forcing WS reconnect`);
+      this.startedAt = Date.now(); // Reset uptime counter
+      if (this.ws) {
+        this.ws.close();
+        this.ws = null;
+      }
+      this.wsConnected = false;
+      this.stopWsHeartbeat();
+      this.stopPingPong();
+      this.scheduleReconnect();
       return;
     }
 

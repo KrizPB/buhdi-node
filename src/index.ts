@@ -144,6 +144,24 @@ async function runSetup(apiKey: string): Promise<void> {
 }
 
 async function runConnect(apiKey: string, isDaemon = false): Promise<void> {
+  // Check if another instance is already running (health port probe)
+  {
+    const checkPort = loadConfig().healthPort ?? 9847;
+    try {
+      const http = require('http');
+      const alreadyRunning = await new Promise<boolean>((resolve) => {
+        const req = http.get(`http://127.0.0.1:${checkPort}/health`, () => resolve(true));
+        req.on('error', () => resolve(false));
+        req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+      });
+      if (alreadyRunning) {
+        // Another instance is serving health — exit to avoid duplicates
+        console.log('ℹ️  Another buhdi-node instance is already running. Exiting.');
+        process.exit(0);
+      }
+    } catch {}
+  }
+
   if (isDaemon) {
     const config = loadConfig();
     setupDaemon(config.logLevel);

@@ -28,12 +28,16 @@ export async function windowsService(action: ServiceAction, nodePath: string, sc
       } catch {}
 
       // Build the PowerShell command to create the task with hidden window
+      // Two triggers: at-logon + repeating every 5 minutes (self-healing)
+      // The repeating trigger ensures the node restarts if it crashes.
+      // The daemon itself handles duplicate detection via health port binding.
       const ps = `
         $action = New-ScheduledTaskAction -Execute '${nodePath.replace(/'/g, "''")}' -Argument '"${scriptPath.replace(/'/g, "''")}" daemon' -WorkingDirectory '${workDir.replace(/'/g, "''")}'
-        $trigger = New-ScheduledTaskTrigger -AtLogon
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365) -StartWhenAvailable -Hidden
+        $triggerLogon = New-ScheduledTaskTrigger -AtLogon
+        $triggerRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365) -StartWhenAvailable -Hidden -MultipleInstances IgnoreNew
         $principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType S4U -RunLevel Limited
-        Register-ScheduledTask -TaskName '${TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Buhdi Node - connect your computer to your AI' -Force
+        Register-ScheduledTask -TaskName '${TASK_NAME}' -Action $action -Trigger @($triggerLogon, $triggerRepeat) -Settings $settings -Principal $principal -Description 'Buhdi Node - connect your computer to your AI' -Force
       `.trim();
 
       try {

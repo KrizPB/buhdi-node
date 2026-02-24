@@ -1169,14 +1169,16 @@ export function startHealthServer(port: number): http.Server | null {
     });
   });
 
-  server.listen(port, '127.0.0.1', () => {
-    // logged by caller
-  });
-
   server.on('error', (err: any) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`⚠️  Health port ${port} already in use`);
+      console.warn(`⚠️  Health port ${port} in use — skipping health server`);
+    } else {
+      console.error(`⚠️  Health server error: ${err.code || err.message}`);
     }
+  });
+
+  server.listen(port, '127.0.0.1', () => {
+    // logged by caller
   });
 
   return server;
