@@ -15,6 +15,33 @@ export class OpenAICompatProvider {
   private config: LLMProviderConfig;
   private health: ProviderHealth;
 
+  /** Build auth headers based on provider config */
+  private authHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (!this.config.apiKey) return headers;
+
+    const authType = this.config.authType || 'bearer';
+    switch (authType) {
+      case 'bearer':
+        headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+        break;
+      case 'x-api-key':
+        headers['X-API-Key'] = this.config.apiKey;
+        break;
+      case 'api-key':
+        headers['api-key'] = this.config.apiKey; // Azure style
+        break;
+      case 'custom':
+        if (this.config.customHeader && /^[A-Za-z0-9-]+$/.test(this.config.customHeader)) {
+          headers[this.config.customHeader] = this.config.apiKey;
+        }
+        break;
+      default:
+        headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    }
+    return headers;
+  }
+
   constructor(config: LLMProviderConfig) {
     this.config = config;
     this.health = {
@@ -32,8 +59,7 @@ export class OpenAICompatProvider {
   async healthCheck(): Promise<boolean> {
     const start = Date.now();
     try {
-      const headers: Record<string, string> = {};
-      if (this.config.apiKey) headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+      const headers: Record<string, string> = { ...this.authHeaders() };
 
       const res = await fetch(`${this.config.endpoint}/v1/models`, {
         headers,
@@ -65,8 +91,7 @@ export class OpenAICompatProvider {
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const start = Date.now();
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.config.apiKey) headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', ...this.authHeaders() };
 
     const body: any = {
       model: this.config.model,
@@ -137,8 +162,7 @@ export class OpenAICompatProvider {
 
   async stream(request: CompletionRequest, callbacks: StreamCallback): Promise<void> {
     const start = Date.now();
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.config.apiKey) headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', ...this.authHeaders() };
 
     const body: any = {
       model: this.config.model,
@@ -242,3 +266,4 @@ export class OpenAICompatProvider {
     }
   }
 }
+

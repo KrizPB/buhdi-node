@@ -314,6 +314,208 @@ export function startHealthServer(port: number): http.Server | null {
       return;
     }
 
+    // ---- Provider Management API ----
+    if (pathname === '/api/providers' && req.method === 'GET') {
+      try {
+        const { loadConfig } = require('./config');
+        const config = loadConfig();
+        const providers = ((config as any).llm?.providers || []).map((p: any) => ({
+          name: p.name,
+          type: p.type || 'openai-compat',
+          endpoint: p.endpoint,
+          model: p.model,
+          priority: p.priority || 1,
+          maxContext: p.maxContext || 8192,
+          enabled: p.enabled !== false,
+          authType: p.authType || 'bearer',
+          customHeader: p.customHeader,
+          hasToken: !!(p.apiKey),
+        }));
+        const strategy = (config as any).llm?.strategy || 'local_first';
+        return jsonResponse(res, { data: providers, strategy });
+      } catch (err: any) {
+        return jsonResponse(res, { data: [], strategy: 'local_first' });
+      }
+    }
+
+    if (pathname === '/api/providers' && req.method === 'POST') {
+      return readBody(req, (body) => {
+        try {
+          const { loadConfig, saveConfig } = require('./config');
+          const input = JSON.parse(body);
+          if (!input.name || !input.endpoint || !input.model) {
+            return jsonResponse(res, { error: 'Missing name, endpoint, or model' }, 400);
+          }
+          if (input.name.length > 100) return jsonResponse(res, { error: 'Name too long' }, 400);
+
+          const config = loadConfig();
+          if (!(config as any).llm) (config as any).llm = {};
+          if (!(config as any).llm.providers) (config as any).llm.providers = [];
+
+          // Check duplicate name
+          const existing = (config as any).llm.providers.findIndex((p: any) => p.name === input.name);
+
+          const provider: any = {
+            name: input.name,
+            type: input.type || 'openai-compat',
+            endpoint: input.endpoint,
+            model: input.model,
+            priority: input.priority || 1,
+            capabilities: ['chat'],
+            maxContext: input.maxContext || 8192,
+            enabled: true,
+            authType: input.authType || 'bearer',
+            customHeader: input.customHeader,
+          };
+
+          // Store API key if provided
+          if (input.token) {
+            provider.apiKey = input.token;
+          }
+
+          if (existing >= 0) {
+            // Update existing — preserve apiKey if not provided
+            if (!input.token && (config as any).llm.providers[existing].apiKey) {
+              provider.apiKey = (config as any).llm.providers[existing].apiKey;
+            }
+            (config as any).llm.providers[existing] = provider;
+          } else {
+            (config as any).llm.providers.push(provider);
+          }
+
+          saveConfig(config);
+          addActivity('🤖', `Provider saved: ${input.name} (${input.model})`);
+
+          // Reinitialize LLM router with new config
+          import('./llm').then(({ initLLMRouter }) => initLLMRouter()).catch(() => {});
+
+          jsonResponse(res, { ok: true, provider: { ...provider, apiKey: undefined, hasToken: !!provider.apiKey } }, existing >= 0 ? 200 : 201);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname?.startsWith('/api/providers/') && req.method === 'DELETE') {
+      try {
+        const name = decodeURIComponent(pathname.slice('/api/providers/'.length));
+        const { loadConfig, saveConfig } = require('./config');
+        const config = loadConfig();
+        const providers = (config as any).llm?.providers || [];
+        const idx = providers.findIndex((p: any) => p.name === name);
+        if (idx === -1) return jsonResponse(res, { error: 'Not found' }, 404);
+        providers.splice(idx, 1);
+        saveConfig(config);
+        addActivity('🗑️', `Provider removed: ${name}`);
+        import('./llm').then(({ initLLMRouter }) => initLLMRouter()).catch(() => {});
+        return jsonResponse(res, { ok: true });
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    if (pathname === '/api/providers/test' && req.method === 'POST') {
+      return readBody(req, async (body) => {
+        try {
+          const input = JSON.parse(body);
+          if (!input.endpoint || !input.model) {
+            return jsonResponse(res, { error: 'Missing endpoint or model' }, 400);
+          }
+
+          // M1-FIX: Validate URL — block private/internal IPs
+          try {
+            const parsed = new URL(input.endpoint);
+            const host = parsed.hostname.toLowerCase();
+            // Allow localhost (for local LLMs) and public IPs
+            const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+            const isPrivate = host.startsWith('10.') || host.startsWith('192.168.') || host.startsWith('169.254.')
+              || host.startsWith('172.16.') || host.startsWith('172.17.') || host.startsWith('172.18.')
+              || host.startsWith('172.19.') || host.startsWith('172.2') || host.startsWith('172.30.') || host.startsWith('172.31.')
+              || host === '0.0.0.0' || host.endsWith('.local') || host.endsWith('.internal');
+            if (isPrivate && !isLocal) {
+              return jsonResponse(res, { ok: false, error: 'Private/internal network addresses blocked (except localhost)' });
+            }
+            if (!['http:', 'https:'].includes(parsed.protocol)) {
+              return jsonResponse(res, { ok: false, error: 'Only http/https endpoints supported' });
+            }
+          } catch {
+            return jsonResponse(res, { ok: false, error: 'Invalid endpoint URL' });
+          }
+
+          // M2-FIX: Validate customHeader name
+          const BLOCKED_HEADERS = ['host', 'content-length', 'transfer-encoding', 'connection', 'cookie', 'set-cookie'];
+          if (input.customHeader) {
+            if (!/^[A-Za-z0-9-]+$/.test(input.customHeader)) {
+              return jsonResponse(res, { ok: false, error: 'Invalid header name (alphanumeric and hyphens only)' });
+            }
+            if (BLOCKED_HEADERS.includes(input.customHeader.toLowerCase())) {
+              return jsonResponse(res, { ok: false, error: 'Reserved header name not allowed' });
+            }
+          }
+
+          const type = input.type || 'openai-compat';
+          let testUrl: string;
+          let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          let testBody: string;
+
+          if (type === 'ollama') {
+            testUrl = `${input.endpoint}/api/chat`;
+            testBody = JSON.stringify({ model: input.model, messages: [{ role: 'user', content: 'Say "hello" in one word.' }], stream: false });
+          } else {
+            testUrl = `${input.endpoint}/chat/completions`;
+            if (input.token) {
+              const authType = input.authType || 'bearer';
+              if (authType === 'bearer') headers['Authorization'] = `Bearer ${input.token}`;
+              else if (authType === 'x-api-key') headers['X-API-Key'] = input.token;
+              else if (authType === 'api-key') headers['api-key'] = input.token;
+              else if (authType === 'custom' && input.customHeader) headers[input.customHeader] = input.token;
+            }
+            testBody = JSON.stringify({ model: input.model, messages: [{ role: 'user', content: 'Say "hello" in one word.' }], max_tokens: 10 });
+          }
+
+          const resp = await fetch(testUrl, {
+            method: 'POST',
+            headers,
+            body: testBody,
+            signal: AbortSignal.timeout(15000),
+          });
+
+          if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            return jsonResponse(res, { ok: false, error: `${resp.status}: ${errText.substring(0, 200)}` });
+          }
+
+          const data = await resp.json() as any;
+          const content = type === 'ollama'
+            ? data?.message?.content
+            : data?.choices?.[0]?.message?.content;
+
+          jsonResponse(res, { ok: true, response: content?.substring(0, 100) || 'Connected!', model: data?.model || input.model });
+        } catch (err: any) {
+          jsonResponse(res, { ok: false, error: err.message });
+        }
+      });
+    }
+
+    if (pathname === '/api/providers/strategy' && req.method === 'POST') {
+      return readBody(req, (body) => {
+        try {
+          const { strategy } = JSON.parse(body);
+          const VALID = ['local_first', 'cloud_first', 'local_only', 'cloud_only', 'cost_optimized'];
+          if (!VALID.includes(strategy)) return jsonResponse(res, { error: 'Invalid strategy' }, 400);
+          const { loadConfig, saveConfig } = require('./config');
+          const config = loadConfig();
+          if (!(config as any).llm) (config as any).llm = {};
+          (config as any).llm.strategy = strategy;
+          saveConfig(config);
+          import('./llm').then(({ initLLMRouter }) => initLLMRouter()).catch(() => {});
+          jsonResponse(res, { ok: true });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
     // ---- Chat Sessions API ----
     if (pathname === '/api/chats' && req.method === 'GET') {
       try {

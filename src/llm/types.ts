@@ -6,9 +6,12 @@ export type RoutingStrategy = 'local_first' | 'cloud_first' | 'local_only' | 'cl
 
 export interface LLMProviderConfig {
   name: string;                // 'ollama', 'lm_studio', 'openai_compat', 'mybuhdi_cloud'
+  type?: string;               // 'ollama' | 'openai-compat'
   endpoint: string;            // 'http://localhost:11434'
   model: string;               // 'qwen3:8b', 'llama3.1:70b'
-  apiKey?: string;             // Only for cloud/keyed providers
+  apiKey?: string;             // API key or OAuth token
+  authType?: string;           // 'bearer' | 'x-api-key' | 'api-key' | 'custom'
+  customHeader?: string;       // Header name when authType='custom'
   priority: number;            // Lower = preferred
   capabilities: string[];      // ['tool_calling', 'vision', 'long_context']
   maxContext: number;           // Token limit

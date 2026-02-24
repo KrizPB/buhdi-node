@@ -328,10 +328,102 @@
         <!-- Settings View -->
         <div class="view" id="view-settings">
           <header class="view-header"><h1>⚙️ Settings</h1></header>
+
+          <!-- AI Providers Section -->
           <section class="dash-section">
-            <h2>Connection</h2>
+            <h2>🤖 AI Providers
+              <button id="provider-add-btn" class="btn btn-secondary" style="float:right;font-size:11px;">+ Add Provider</button>
+            </h2>
+            <p class="section-desc">Configure LLM providers for chat. Supports API keys, OAuth tokens, and local models.</p>
+
+            <!-- Add/Edit Provider Form -->
+            <div id="provider-form" class="provider-form" style="display:none;">
+              <div class="form-row">
+                <div class="form-field">
+                  <label>Name</label>
+                  <input type="text" id="prov-name" placeholder="e.g. OpenRouter, Anthropic, Local Ollama" class="form-input">
+                </div>
+                <div class="form-field">
+                  <label>Type</label>
+                  <select id="prov-type" class="form-input">
+                    <option value="openai-compat">OpenAI Compatible</option>
+                    <option value="ollama">Ollama</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-field" style="flex:2">
+                  <label>Endpoint URL</label>
+                  <input type="text" id="prov-endpoint" placeholder="https://openrouter.ai/api/v1" class="form-input">
+                </div>
+                <div class="form-field">
+                  <label>Model</label>
+                  <input type="text" id="prov-model" placeholder="e.g. claude-sonnet-4-20250514" class="form-input">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-field" style="flex:2">
+                  <label>Auth Token <span class="form-hint">(API Key or OAuth Token — stored encrypted)</span></label>
+                  <input type="password" id="prov-token" placeholder="sk-... or Bearer token" class="form-input">
+                </div>
+                <div class="form-field">
+                  <label>Auth Header</label>
+                  <select id="prov-auth-type" class="form-input">
+                    <option value="bearer">Authorization: Bearer</option>
+                    <option value="x-api-key">X-API-Key</option>
+                    <option value="api-key">api-key (Azure)</option>
+                    <option value="custom">Custom Header</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row" id="prov-custom-header-row" style="display:none;">
+                <div class="form-field">
+                  <label>Custom Header Name</label>
+                  <input type="text" id="prov-custom-header" placeholder="X-My-Auth" class="form-input">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-field">
+                  <label>Priority</label>
+                  <input type="number" id="prov-priority" value="1" min="1" max="10" class="form-input" style="width:80px">
+                </div>
+                <div class="form-field">
+                  <label>Max Context</label>
+                  <input type="number" id="prov-context" value="8192" class="form-input" style="width:120px">
+                </div>
+                <div class="form-field" style="flex:1;display:flex;align-items:end;gap:8px;">
+                  <button id="prov-test-btn" class="btn btn-secondary">🧪 Test</button>
+                  <button id="prov-save-btn" class="btn btn-primary">Save Provider</button>
+                  <button id="prov-cancel-btn" class="btn btn-secondary">Cancel</button>
+                </div>
+              </div>
+              <div id="prov-test-result" class="provider-test-result" style="display:none;"></div>
+            </div>
+
+            <!-- Provider List -->
+            <div id="provider-list" class="provider-list">
+              <div class="activity-empty">No providers configured. Add one to start chatting.</div>
+            </div>
+          </section>
+
+          <!-- Routing Strategy -->
+          <section class="dash-section">
+            <h2>🔀 Routing Strategy</h2>
+            <select id="routing-strategy" class="form-input" style="width:300px;">
+              <option value="local_first">Local First (try local, fall back to cloud)</option>
+              <option value="cloud_first">Cloud First (try cloud, fall back to local)</option>
+              <option value="local_only">Local Only (never use cloud)</option>
+              <option value="cloud_only">Cloud Only (never use local)</option>
+              <option value="cost_optimized">Cost Optimized (prefer cheapest)</option>
+            </select>
+            <button id="strategy-save-btn" class="btn btn-primary" style="margin-left:8px;">Save</button>
+          </section>
+
+          <!-- Node Info -->
+          <section class="dash-section">
+            <h2>📋 Node Info</h2>
             <div class="settings-group">
-              <label>API Key</label>
+              <label>mybuhdi.com API Key</label>
               <div class="settings-value" id="settings-apikey">●●●●●●●●●●</div>
             </div>
             <div class="settings-group">
