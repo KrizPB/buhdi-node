@@ -227,6 +227,7 @@ export function startHealthServer(port: number): http.Server | null {
           const { toolRegistry } = require('./tool-plugins');
           const { sanitizeHistory, sanitizeToolOutput, validateToolCall, MAX_TOOL_CALLS_PER_TURN } = require('./llm/safety');
           const { buildPersonaPrompt } = require('./persona');
+          const { getRelevantContext } = require('./memory');
 
           // H6-FIX: Sanitize client history (only user/assistant, strip secrets)
           const safeHistory = sanitizeHistory(history);
@@ -235,8 +236,11 @@ export function startHealthServer(port: number): http.Server | null {
           const toolDesc = tools.map((t: any) => `- ${t.function.name}: ${t.function.description}`).join('\n');
           const systemPrompt = await buildPersonaPrompt(toolDesc);
 
+          // Pull relevant memory context for this specific message
+          const memoryContext = getRelevantContext(message, 1500);
+
           const messages: any[] = [
-            { role: 'system', content: systemPrompt },
+            { role: 'system', content: systemPrompt + (memoryContext ? '\n\n' + memoryContext : '') },
             ...safeHistory,
             { role: 'user', content: message },
           ];
@@ -1223,6 +1227,7 @@ async function handleWSChat(message: string, history: any[], ws: import('ws').We
     const { toolRegistry } = require('./tool-plugins');
     const { sanitizeHistory } = require('./llm/safety');
     const { buildPersonaPrompt } = require('./persona');
+    const { getRelevantContext } = require('./memory');
     const tools = toolRegistry.getLLMToolSchemas();
 
     // H6-FIX: Sanitize client history
@@ -1231,8 +1236,11 @@ async function handleWSChat(message: string, history: any[], ws: import('ws').We
     const toolDesc = tools.map((t: any) => `- ${t.function.name}: ${t.function.description}`).join('\n');
     const systemPrompt = await buildPersonaPrompt(toolDesc);
 
+    // Pull relevant memory for this specific message
+    const memoryContext = getRelevantContext(message, 1500);
+
     const messages = [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: systemPrompt + (memoryContext ? '\n\n' + memoryContext : '') },
       ...safeHistory,
       { role: 'user', content: message },
     ];

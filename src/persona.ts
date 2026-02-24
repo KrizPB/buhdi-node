@@ -11,6 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { loadConfig } from './config';
+import { hydrateFromCloudBootstrap, isMemoryInitialized } from './memory';
 
 const PERSONA_DIR = path.join(
   process.env.BUHDI_NODE_CONFIG_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '', '.buhdi-node'),
@@ -232,20 +233,30 @@ export async function buildPersonaPrompt(toolDescriptions?: string): Promise<str
     }
 
     case 'local_first': {
-      // Local persona + cloud memory enrichment
+      // Local persona + cloud memory hydrated into local DB
       const local = readLocalPersona();
       if (local.soul) parts.push(local.soul);
       if (local.systemPrompt) parts.push(local.systemPrompt);
       if (local.tools) parts.push(local.tools);
 
-      // Try to pull cloud memory context (non-blocking)
+      // Pull cloud bootstrap — hydrate local memory DB, NOT the prompt
       const cloud = await getCloudBootstrap();
       if (cloud) {
-        const memParts = buildMemorySection(cloud);
-        if (memParts) parts.push(memParts);
-        if (cloud.directives?.length) {
-          parts.push('\n## Directives\n' + cloud.directives.join('\n\n'));
+        // Hydrate entities/insights into local SQLite (skips duplicates)
+        if (isMemoryInitialized() && cloud.memory) {
+          hydrateFromCloudBootstrap({
+            entities: Array.isArray(cloud.memory.entities) ? cloud.memory.entities : undefined,
+            insights: Array.isArray(cloud.memory.insights) ? cloud.memory.insights : undefined,
+            relationships: typeof cloud.memory.relationships === 'string' ? cloud.memory.relationships : undefined,
+          });
         }
+        // Only add lightweight directives to prompt (not full memory dump)
+        if (cloud.soul) parts.push('\n## Cloud Personality\n' + sanitizeCloudField(cloud.soul, 1000));
+        if (cloud.identity) parts.push('\n## Identity\n' + sanitizeCloudField(cloud.identity, 500));
+        if (cloud.directives?.length) {
+          parts.push('\n## Directives\n' + cloud.directives.map(d => sanitizeCloudField(d, 1000)).join('\n\n'));
+        }
+        parts.push('\n*Cloud memory has been synced to local database. Use memory search for specific context.*');
       }
       break;
     }
@@ -257,7 +268,7 @@ export async function buildPersonaPrompt(toolDescriptions?: string): Promise<str
         const memParts = buildMemorySection(cloud);
         if (memParts) parts.push(memParts);
         if (cloud.directives?.length) {
-          parts.push('\n## Directives\n' + cloud.directives.join('\n\n'));
+          parts.push('\n## Directives\n' + cloud.directives.map(d => sanitizeCloudField(d, 1000)).join('\n\n'));
         }
       } else {
         // Cloud down — fall back to local
@@ -277,14 +288,14 @@ export async function buildPersonaPrompt(toolDescriptions?: string): Promise<str
       // Always cloud
       const cloud = await getCloudBootstrap();
       if (cloud) {
-        if (cloud.soul) parts.push(cloud.soul);
-        if (cloud.identity) parts.push('\n## Identity\n' + cloud.identity);
-        if (cloud.user) parts.push('\n## About the User\n' + cloud.user);
+        if (cloud.soul) parts.push(sanitizeCloudField(cloud.soul, 2000));
+        if (cloud.identity) parts.push('\n## Identity\n' + sanitizeCloudField(cloud.identity, 500));
+        if (cloud.user) parts.push('\n## About the User\n' + sanitizeCloudField(cloud.user, 500));
         if (cloud.directives?.length) {
-          parts.push('\n## Directives\n' + cloud.directives.join('\n'));
+          parts.push('\n## Directives\n' + cloud.directives.map(d => sanitizeCloudField(d, 1000)).join('\n'));
         }
         if (cloud.memory?.context) {
-          parts.push('\n## Memory Context\n' + cloud.memory.context);
+          parts.push('\n## Memory Context\n' + sanitizeCloudField(cloud.memory.context, 3000));
         }
       } else {
         parts.push('You are Buhdi, an AI assistant. Cloud connection is currently unavailable.');
