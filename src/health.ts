@@ -313,6 +313,41 @@ export function startHealthServer(port: number): http.Server | null {
       return;
     }
 
+    // ---- Agent API ----
+    if (pathname === '/api/agent/run' && req.method === 'POST') {
+      return readBody(req, async (body) => {
+        try {
+          const { goal, config } = JSON.parse(body);
+          if (!goal || typeof goal !== 'string') {
+            return jsonResponse(res, { error: 'Missing goal' }, 400);
+          }
+          const { runAgent } = require('./agent');
+          const run = await runAgent(goal, config);
+          jsonResponse(res, run);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname === '/api/agent/cancel' && req.method === 'POST') {
+      return readBody(req, (body) => {
+        try {
+          const { runId } = JSON.parse(body);
+          const { cancelAgent } = require('./agent');
+          const ok = cancelAgent(runId);
+          jsonResponse(res, { ok, runId });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname === '/api/agent/active' && req.method === 'GET') {
+      const { getActiveRuns } = require('./agent');
+      return jsonResponse(res, { runs: getActiveRuns() });
+    }
+
     // ---- Tool Plugin API ----
     if (pathname === '/api/tool-plugins' && req.method === 'GET') {
       const { toolRegistry } = require('./tool-plugins');
@@ -401,10 +436,17 @@ export function startHealthServer(port: number): http.Server | null {
           if (chatHandler) {
             chatHandler(data.message, ws);
           } else {
-            // Route through LLM if available, otherwise placeholder
             handleWSChat(data.message, data.history || [], ws);
           }
           addActivity('💬', `Chat: "${data.message.substring(0, 50)}"`);
+        }
+        if (data.type === 'agent.run' && data.goal) {
+          handleWSAgentRun(data.goal, data.config || {}, ws);
+        }
+        if (data.type === 'agent.cancel' && data.runId) {
+          const { cancelAgent } = require('./agent');
+          cancelAgent(data.runId);
+          ws.send(JSON.stringify({ type: 'agent.cancelled', runId: data.runId }));
         }
       } catch {}
     });
@@ -605,6 +647,73 @@ async function handleToolCallsAndRespond(
       content: `Tool execution error: ${err.message}`,
       ts: new Date().toISOString(),
     }));
+  }
+}
+
+// ---- WebSocket Agent Run ----
+async function handleWSAgentRun(goal: string, config: any, ws: import('ws').WebSocket): Promise<void> {
+  // F6-FIX: Safe send that checks readyState
+  const wsSend = (data: any) => {
+    if (ws.readyState === 1 /* OPEN */) {
+      ws.send(JSON.stringify(data));
+    }
+  };
+
+  try {
+    const { runAgent } = require('./agent');
+
+    const run = await runAgent(goal, config, {
+      onStep: (step: any, run: any) => {
+        wsSend({
+          type: 'agent.step',
+          runId: run.id,
+          step: {
+            index: step.index,
+            thought: step.thought,
+            action: step.action,
+            observation: step.observation?.substring(0, 500),
+            durationMs: step.durationMs,
+          },
+        });
+      },
+      onToolCall: (tool: string, params: any) => {
+        wsSend({ type: 'agent.tool_call', tool, params });
+      },
+      onToolResult: (tool: string, result: any) => {
+        wsSend({
+          type: 'agent.tool_result',
+          tool,
+          success: result.success,
+          output: (result.output || '').substring(0, 300),
+        });
+      },
+      onThinking: (thought: string) => {
+        wsSend({ type: 'agent.thinking', thought });
+      },
+      onComplete: (run: any) => {
+        wsSend({
+          type: 'agent.complete',
+          runId: run.id,
+          status: run.status,
+          result: run.result,
+          steps: run.steps.length,
+          toolsUsed: run.toolsUsed,
+          durationMs: run.totalDurationMs,
+        });
+      },
+      onError: (err: Error, run: any) => {
+        wsSend({
+          type: 'agent.error',
+          runId: run.id,
+          error: err.message,
+        });
+      },
+    });
+  } catch (err: any) {
+    wsSend({
+      type: 'agent.error',
+      error: err.message,
+    });
   }
 }
 

@@ -256,6 +256,21 @@ export class TaskExecutor {
         case 'status_ping':
           result = await this.statusPing(task.payload);
           break;
+        case 'agent_run': {
+          const { runAgent } = require('./agent');
+          const agentResult = await runAgent(
+            task.payload.goal,
+            task.payload.config || {},
+          );
+          result = {
+            status: agentResult.status,
+            result: agentResult.result,
+            steps: agentResult.steps.length,
+            toolsUsed: agentResult.toolsUsed,
+            durationMs: agentResult.totalDurationMs,
+          };
+          break;
+        }
         case 'tool_execute': {
           const { toolRegistry } = require('./tool-plugins');
           const { tool, action: toolAction, params: toolParams } = task.payload;
