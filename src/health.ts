@@ -314,6 +314,34 @@ export function startHealthServer(port: number): http.Server | null {
       return;
     }
 
+    // ---- Wizard API ----
+    if (pathname === '/api/wizard/status' && req.method === 'GET') {
+      (async () => {
+        try {
+          const { runWizard } = require('./wizard');
+          const status = await runWizard();
+          jsonResponse(res, status);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      })();
+      return;
+    }
+
+    if (pathname === '/api/wizard/auto-config' && req.method === 'POST') {
+      (async () => {
+        try {
+          const { autoConfig } = require('./wizard');
+          const result = await autoConfig();
+          addActivity('🧙', `Auto-config: ${result.actions.join(', ')}`);
+          jsonResponse(res, result);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      })();
+      return;
+    }
+
     // ---- Memory API ----
     // M2-FIX: Rate limiter for memory writes (100/min)
     const memoryRateKey = `mem_${req.socket.remoteAddress}`;

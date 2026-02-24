@@ -8,6 +8,39 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐻</text></svg>">
 </head>
 <body>
+  <!-- First-Run Wizard Overlay -->
+  <div id="wizard-overlay" class="wizard-overlay" style="display:none;">
+    <div class="wizard-card">
+      <div class="wizard-header">
+        <span class="wizard-logo">🐻</span>
+        <h1>Welcome to <strong>Buhdi Node</strong></h1>
+        <p class="wizard-subtitle">Your AI, your machine, your data.</p>
+      </div>
+
+      <div class="wizard-step" id="wizard-step-detect">
+        <h2>🔍 Detecting your setup...</h2>
+        <div id="wizard-detections" class="wizard-detections"></div>
+      </div>
+
+      <div class="wizard-step" id="wizard-step-recommendations" style="display:none;">
+        <h2>💡 Recommendations</h2>
+        <div id="wizard-recommendations" class="wizard-recommendations"></div>
+        <div class="wizard-actions">
+          <button id="wizard-auto-config" class="btn btn-primary" style="display:none;">⚡ Auto-Configure</button>
+          <button id="wizard-skip" class="btn btn-secondary">Continue to Dashboard →</button>
+        </div>
+      </div>
+
+      <div class="wizard-step" id="wizard-step-done" style="display:none;">
+        <h2>✅ You're all set!</h2>
+        <div id="wizard-done-summary"></div>
+        <div class="wizard-actions">
+          <button id="wizard-finish" class="btn btn-primary">Open Dashboard</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="app">
     <!-- Top Header Bar (matches mybuhdi.com) -->
     <header id="top-bar">

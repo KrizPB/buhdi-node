@@ -937,6 +937,102 @@ html, body {
   border-color: var(--amber);
 }
 
+/* ---- Wizard ---- */
+.wizard-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wizard-card {
+  background: var(--surface);
+  border: 1px solid var(--amber);
+  border-radius: 16px;
+  padding: 40px;
+  max-width: 560px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.wizard-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+.wizard-logo {
+  font-size: 48px;
+  display: block;
+  margin-bottom: 8px;
+}
+.wizard-header h1 {
+  font-size: 24px;
+  color: var(--text);
+  margin: 0;
+}
+.wizard-subtitle {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-top: 4px;
+}
+.wizard-step h2 {
+  font-size: 16px;
+  color: var(--amber);
+  margin-bottom: 16px;
+}
+.wizard-detections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.detect-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.detect-item .detect-icon {
+  font-size: 18px;
+}
+.detect-item .detect-label {
+  color: var(--text);
+  flex: 1;
+}
+.detect-item .detect-status {
+  font-size: 12px;
+  font-weight: 600;
+}
+.detect-status.ok { color: #22c55e; }
+.detect-status.warn { color: var(--amber); }
+.detect-status.missing { color: #ef4444; }
+.wizard-recommendations {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.rec-item {
+  padding: 10px 14px;
+  background: var(--bg);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text);
+  border-left: 3px solid var(--amber);
+}
+.wizard-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 24px;
+}
+.wizard-actions .btn {
+  padding: 12px 24px;
+  font-size: 14px;
+}
+
 /* ---- Editor ---- */
 .editor-layout {
   flex: 1;
