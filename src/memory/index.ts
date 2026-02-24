@@ -6,6 +6,7 @@
  */
 
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { initDatabase, closeDatabase, getStats, createEntity, createFact, createInsight, listEntities, getDb } from './database';
 import { configureEmbeddings, checkEmbeddingHealth, isEmbeddingAvailable, getEmbeddingProvider } from './embeddings';
 import { MemoryConfig, MemoryStatus } from './types';
@@ -133,6 +134,27 @@ export function hydrateFromCloudBootstrap(cloudMemory: {
     for (const ent of cloudMemory.entities) {
       if (!ent.name) continue;
       if (existingNames.has(ent.name.toLowerCase())) {
+        // Entity exists — merge any new facts
+        if (ent.facts?.length) {
+          try {
+            const db = getDb();
+            const existingEntity = existing.find(e => e.name.toLowerCase() === ent.name.toLowerCase());
+            if (existingEntity) {
+              const existingFacts = new Set(
+                (db.prepare('SELECT key FROM facts WHERE entity_id = ?').all(existingEntity.id) as Array<{ key: string }>)
+                  .map(f => f.key.toLowerCase())
+              );
+              for (const f of ent.facts) {
+                if (!existingFacts.has(f.key.toLowerCase())) {
+                  db.prepare('INSERT INTO facts (id, entity_id, owner_id, key, value, is_dirty) VALUES (?, ?, ?, ?, ?, 0)')
+                    .run(crypto.randomUUID(), existingEntity.id, ownerId, sanitizeForStorage(f.key, 200), sanitizeForStorage(f.value, 1000));
+                }
+              }
+            }
+          } catch (err: any) {
+            console.warn(`[memory] Failed to merge facts for "${ent.name}": ${err.message}`);
+          }
+        }
         skipped++;
         continue;
       }
