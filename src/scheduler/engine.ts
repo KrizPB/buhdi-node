@@ -327,7 +327,8 @@ async function executeScriptAction(action: { type: 'script'; command: string; cw
   if (action.cwd) {
     const resolvedCwd = path.resolve(action.cwd);
     const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-    if (homeDir && !resolvedCwd.startsWith(homeDir)) {
+    if (!homeDir) throw new Error('Cannot determine home directory for cwd validation');
+    if (!resolvedCwd.startsWith(homeDir)) {
       throw new Error('Script cwd must be within home directory');
     }
     if (!fs.existsSync(resolvedCwd)) {
@@ -344,8 +345,8 @@ async function executeScriptAction(action: { type: 'script'; command: string; cw
       timeout: action.timeout_ms || timeout_ms,
       maxBuffer: 1024 * 1024,
     }, (err, stdout, stderr) => {
-      // L3-FIX: Strip ANSI escape codes
-      const clean = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').substring(0, 4096);
+      // L3-FIX: Strip all ANSI escape sequences
+      const clean = (s: string) => s.replace(/\x1b\[[\x20-\x3f]*[\x40-\x7e]|\x1b[\x40-\x5f]/g, '').substring(0, 4096);
       if (err) return reject(new Error(`Script failed: ${err.message}\n${clean(stderr)}`));
       resolve(clean(stdout));
     });

@@ -24,11 +24,16 @@ export function configureEmbeddings(config: {
 }): void {
   if (config.ollama_url) {
     // M3-FIX: Only allow localhost Ollama URLs to prevent SSRF
-    const url = config.ollama_url.toLowerCase();
-    if (url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1') || url.startsWith('http://[::1]')) {
-      ollamaUrl = config.ollama_url;
-    } else {
-      console.warn(`[memory] Ignoring non-localhost ollama_url: ${config.ollama_url}`);
+    try {
+      const parsed = new URL(config.ollama_url);
+      const host = parsed.hostname.toLowerCase();
+      if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+        ollamaUrl = config.ollama_url;
+      } else {
+        console.warn(`[memory] Ignoring non-localhost ollama_url: ${config.ollama_url}`);
+      }
+    } catch {
+      console.warn(`[memory] Invalid ollama_url: ${config.ollama_url}`);
     }
   }
   if (config.model) embeddingModel = config.model;
