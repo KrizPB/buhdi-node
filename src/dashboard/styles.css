@@ -722,6 +722,160 @@ html, body {
   font-size: 18px;
 }
 
+/* ---- Memory View ---- */
+.memory-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--amber);
+}
+.stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.memory-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.search-input {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  color: var(--text);
+  font-size: 14px;
+}
+.search-input:focus {
+  border-color: var(--amber);
+  outline: none;
+}
+.btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.btn-primary {
+  background: var(--amber);
+  color: #000;
+}
+.btn-primary:hover { opacity: 0.9; }
+.btn-secondary {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover { border-color: var(--amber); }
+.memory-results {
+  margin-bottom: 20px;
+}
+.search-result {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+.search-result .result-score {
+  font-size: 11px;
+  color: var(--amber);
+  float: right;
+}
+.search-result .result-type {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-right: 8px;
+}
+.search-result .result-text {
+  color: var(--text);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.search-result .result-entity {
+  font-size: 12px;
+  color: var(--amber);
+  font-weight: 600;
+}
+.entity-list .entity-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.entity-card:hover { border-color: var(--amber); }
+.entity-card .entity-name {
+  font-weight: 600;
+  color: var(--text);
+}
+.entity-card .entity-type {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-left: 8px;
+}
+.entity-card .entity-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.entity-card .entity-facts {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+.memory-add-form {
+  margin-top: 16px;
+}
+.memory-add-form summary {
+  cursor: pointer;
+  color: var(--amber);
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.memory-add-form .form-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.form-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+}
+.form-input:focus {
+  border-color: var(--amber);
+  outline: none;
+}
+
 /* ---- Editor ---- */
 .editor-layout {
   flex: 1;

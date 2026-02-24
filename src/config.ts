@@ -45,6 +45,20 @@ export interface BuhdiConfig {
     maxLatencyMs?: number;
     retries?: number;
   };
+  memory?: {
+    enabled?: boolean;
+    db_path?: string;
+    embedding_model?: string;
+    embedding_dimensions?: number;
+    ollama_url?: string;
+    owner_id?: string;
+    sync?: {
+      enabled: boolean;
+      cloud_url: string;
+      api_key: string;
+      interval_seconds: number;
+    };
+  };
 }
 
 // Legacy compat export

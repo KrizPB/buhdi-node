@@ -11,6 +11,7 @@ import { getDashboardToken } from './dashboard';
 
 const VERSION = '0.3.0';
 const startTime = Date.now();
+let memoryWriteLog: Map<string, number[]> | null = null;
 
 // Static file MIME types
 const MIME: Record<string, string> = {
@@ -306,6 +307,223 @@ export function startHealthServer(port: number): http.Server | null {
           const { llmRouter } = require('./llm');
           await llmRouter.runHealthChecks();
           jsonResponse(res, { providers: llmRouter.getHealthStatus() });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      })();
+      return;
+    }
+
+    // ---- Memory API ----
+    // M2-FIX: Rate limiter for memory writes (100/min)
+    const memoryRateKey = `mem_${req.socket.remoteAddress}`;
+    if (!memoryWriteLog) memoryWriteLog = new Map();
+    function checkMemoryRate(): boolean {
+      const now = Date.now();
+      const log = memoryWriteLog!.get(memoryRateKey) || [];
+      const recent = log.filter((t: number) => now - t < 60000);
+      if (recent.length >= 100) return false;
+      recent.push(now);
+      memoryWriteLog!.set(memoryRateKey, recent);
+      return true;
+    }
+    if (pathname === '/api/memory/status' && req.method === 'GET') {
+      try {
+        const { getMemoryStatus } = require('./memory');
+        return jsonResponse(res, getMemoryStatus());
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message, state: 'uninitialized' });
+      }
+    }
+
+    if (pathname === '/api/memory/entities' && req.method === 'GET') {
+      try {
+        const { listEntities, isMemoryInitialized } = require('./memory');
+        if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+        const params = new URL(req.url || '', 'http://localhost').searchParams;
+        const q = params.get('q') || undefined;
+        const limit = Math.min(parseInt(params.get('limit') || '50'), 200);
+        const offset = parseInt(params.get('offset') || '0');
+        const entities = listEntities('local', q, limit, offset);
+        return jsonResponse(res, { data: entities });
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    if (pathname === '/api/memory/entities' && req.method === 'POST') {
+      return readBody(req, async (body) => {
+        try {
+          const { createEntity, embedEntity, isMemoryInitialized } = require('./memory');
+          if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+          if (!checkMemoryRate()) return jsonResponse(res, { error: 'Rate limit exceeded (100/min)' }, 429);
+          const input = JSON.parse(body);
+          if (!input.name) return jsonResponse(res, { error: 'Missing name' }, 400);
+          // L1-FIX: Input length limits
+          if (input.name?.length > 500) return jsonResponse(res, { error: 'Name too long (max 500)' }, 400);
+          if (input.description?.length > 5000) return jsonResponse(res, { error: 'Description too long (max 5000)' }, 400);
+          const entity = createEntity('local', input);
+          // Background embed (don't block response)
+          embedEntity(entity.id).catch(() => {});
+          addActivity('🧠', `Memory: stored entity "${entity.name}"`);
+          jsonResponse(res, { data: entity }, 201);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname?.startsWith('/api/memory/entities/') && req.method === 'GET') {
+      try {
+        const { getEntity, isMemoryInitialized } = require('./memory');
+        if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+        const id = pathname.slice('/api/memory/entities/'.length);
+        const entity = getEntity(id);
+        if (!entity) return jsonResponse(res, { error: 'Not found' }, 404);
+        return jsonResponse(res, { data: entity });
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    if (pathname?.startsWith('/api/memory/entities/') && req.method === 'PUT') {
+      return readBody(req, (body) => {
+        try {
+          const { updateEntity, embedEntity, isMemoryInitialized } = require('./memory');
+          if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+          const id = pathname!.slice('/api/memory/entities/'.length);
+          const input = JSON.parse(body);
+          const entity = updateEntity(id, input);
+          if (!entity) return jsonResponse(res, { error: 'Not found' }, 404);
+          embedEntity(entity.id).catch(() => {});
+          jsonResponse(res, { data: entity });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname?.startsWith('/api/memory/entities/') && req.method === 'DELETE') {
+      try {
+        const { deleteEntity, isMemoryInitialized } = require('./memory');
+        if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+        const id = pathname.slice('/api/memory/entities/'.length);
+        const ok = deleteEntity(id);
+        if (!ok) return jsonResponse(res, { error: 'Not found' }, 404);
+        addActivity('🧠', `Memory: deleted entity ${id}`);
+        return jsonResponse(res, { ok: true });
+      } catch (err: any) {
+        return jsonResponse(res, { error: err.message }, 500);
+      }
+    }
+
+    if (pathname === '/api/memory/facts' && req.method === 'POST') {
+      return readBody(req, async (body) => {
+        try {
+          const { createFact, storeEmbedding, isMemoryInitialized, getDb } = require('./memory');
+          if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+          if (!checkMemoryRate()) return jsonResponse(res, { error: 'Rate limit exceeded (100/min)' }, 429);
+          const input = JSON.parse(body);
+          if (!input.entity_id || !input.key || !input.value) {
+            return jsonResponse(res, { error: 'Missing entity_id, key, or value' }, 400);
+          }
+          if (input.key?.length > 500) return jsonResponse(res, { error: 'Key too long (max 500)' }, 400);
+          if (input.value?.length > 10000) return jsonResponse(res, { error: 'Value too long (max 10000)' }, 400);
+          const fact = createFact('local', input);
+          // Embed the fact
+          const entity = getDb().prepare('SELECT name FROM entities WHERE id = ?').get(input.entity_id) as any;
+          if (entity) {
+            storeEmbedding('facts', fact.id, `${entity.name}: ${fact.key} = ${fact.value}`).catch(() => {});
+          }
+          jsonResponse(res, { data: fact }, 201);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname === '/api/memory/relationships' && req.method === 'POST') {
+      return readBody(req, (body) => {
+        try {
+          const { createRelationship, isMemoryInitialized } = require('./memory');
+          if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+          if (!checkMemoryRate()) return jsonResponse(res, { error: 'Rate limit exceeded (100/min)' }, 429);
+          const input = JSON.parse(body);
+          if (!input.source_entity_id || !input.target_entity_id || !input.relationship_type) {
+            return jsonResponse(res, { error: 'Missing source_entity_id, target_entity_id, or relationship_type' }, 400);
+          }
+          const rel = createRelationship('local', input);
+          jsonResponse(res, { data: rel }, 201);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname === '/api/memory/insights' && req.method === 'POST') {
+      return readBody(req, async (body) => {
+        try {
+          const { createInsight, embedInsight, isMemoryInitialized } = require('./memory');
+          if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+          if (!checkMemoryRate()) return jsonResponse(res, { error: 'Rate limit exceeded (100/min)' }, 429);
+          const input = JSON.parse(body);
+          if (!input.content) return jsonResponse(res, { error: 'Missing content' }, 400);
+          if (input.content?.length > 10000) return jsonResponse(res, { error: 'Content too long (max 10000)' }, 400);
+          const insight = createInsight('local', input);
+          embedInsight(insight.id).catch(() => {});
+          jsonResponse(res, { data: insight }, 201);
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      });
+    }
+
+    if (pathname === '/api/memory/search' && req.method === 'GET') {
+      (async () => {
+        try {
+          const { semanticSearch, isMemoryInitialized } = require('./memory');
+          if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+          const params = new URL(req.url || '', 'http://localhost').searchParams;
+          const query = params.get('q') || params.get('query') || '';
+          if (!query) return jsonResponse(res, { error: 'Missing q parameter' }, 400);
+          const limit = Math.min(parseInt(params.get('limit') || '10'), 50);
+          const minScore = parseFloat(params.get('min_score') || '0.3');
+          const results = await semanticSearch(query, { limit, minScore });
+          jsonResponse(res, { data: results, query });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      })();
+      return;
+    }
+
+    if (pathname === '/api/memory/context' && req.method === 'GET') {
+      (async () => {
+        try {
+          const { contextSearch, isMemoryInitialized } = require('./memory');
+          if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+          const params = new URL(req.url || '', 'http://localhost').searchParams;
+          const query = params.get('q') || params.get('query') || '';
+          if (!query) return jsonResponse(res, { error: 'Missing q parameter' }, 400);
+          const limit = Math.min(parseInt(params.get('limit') || '5'), 20);
+          const result = await contextSearch(query, { limit });
+          jsonResponse(res, { data: result });
+        } catch (err: any) {
+          jsonResponse(res, { error: err.message }, 500);
+        }
+      })();
+      return;
+    }
+
+    if (pathname === '/api/memory/reindex' && req.method === 'POST') {
+      (async () => {
+        try {
+          const { reindexAll, isMemoryInitialized } = require('./memory');
+          if (!isMemoryInitialized()) return jsonResponse(res, { error: 'Memory not initialized' }, 503);
+          addActivity('🧠', 'Memory: reindexing all embeddings...');
+          const result = await reindexAll();
+          addActivity('🧠', `Memory: reindex complete — ${result.embedded} embeddings (${result.errors} errors)`);
+          jsonResponse(res, { data: result });
         } catch (err: any) {
           jsonResponse(res, { error: err.message }, 500);
         }

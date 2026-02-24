@@ -140,6 +140,23 @@ async function runConnect(apiKey: string, isDaemon = false): Promise<void> {
         else console.warn('⚠️  Tool plugin init:', err.message);
       });
     });
+
+    // Initialize local memory
+    import('./memory').then(({ initMemory }) => {
+      const memConfig: any = {};
+      if ((config as any).memory) {
+        Object.assign(memConfig, (config as any).memory);
+      }
+      // Use Ollama URL from LLM config if available
+      if ((config as any).llm?.providers) {
+        const ollama = (config as any).llm.providers.find((p: any) => p.type === 'ollama');
+        if (ollama?.url) memConfig.ollama_url = ollama.url;
+      }
+      initMemory(memConfig).catch((err: any) => {
+        if (isDaemon) getLogger().warn('Memory init error: ' + err.message);
+        else console.warn('⚠️  Memory init:', err.message);
+      });
+    });
   } catch (err: any) {
     const msg = `Connection failed: ${err.message}`;
     if (isDaemon) getLogger().error(msg); else console.error(`❌ ${msg}\n   Entering offline poll mode.\n`);

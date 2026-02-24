@@ -20,6 +20,7 @@
         <button class="top-nav-btn" data-view="dashboard">Dashboard</button>
         <button class="top-nav-btn" data-view="jobs">Jobs</button>
         <button class="top-nav-btn" data-view="tools">Tools</button>
+        <button class="top-nav-btn" data-view="memory">Memory</button>
         <button class="top-nav-btn" data-view="editor">Config</button>
         <button class="top-nav-btn" data-view="settings">Settings</button>
       </nav>
@@ -51,6 +52,10 @@
         <button class="nav-btn" data-view="tools">
           <span class="nav-icon">🔧</span>
           <span class="nav-label">Tools</span>
+        </button>
+        <button class="nav-btn" data-view="memory">
+          <span class="nav-icon">🧠</span>
+          <span class="nav-label">Memory</span>
         </button>
         <button class="nav-btn" data-view="editor">
           <span class="nav-icon">📖</span>
@@ -155,6 +160,78 @@
           <div class="tools-showcase" id="tools-showcase">
             <div class="activity-empty">Loading tools catalog...</div>
           </div>
+        </div>
+
+        <!-- Memory View -->
+        <div class="view" id="view-memory">
+          <header class="view-header">
+            <h1>🧠 Local Memory</h1>
+            <span class="header-badge" id="memory-status-badge">Loading...</span>
+          </header>
+
+          <!-- Memory Stats -->
+          <div class="memory-stats" id="memory-stats">
+            <div class="stat-card">
+              <div class="stat-value" id="mem-entities">—</div>
+              <div class="stat-label">Entities</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value" id="mem-facts">—</div>
+              <div class="stat-label">Facts</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value" id="mem-relationships">—</div>
+              <div class="stat-label">Relationships</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value" id="mem-insights">—</div>
+              <div class="stat-label">Insights</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value" id="mem-embeddings">—</div>
+              <div class="stat-label">Embeddings</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value" id="mem-db-size">—</div>
+              <div class="stat-label">DB Size</div>
+            </div>
+          </div>
+
+          <!-- Search -->
+          <div class="memory-search">
+            <input type="text" id="memory-search-input" placeholder="Search memory (semantic + text)..." class="search-input">
+            <button id="memory-search-btn" class="btn btn-primary">Search</button>
+            <button id="memory-reindex-btn" class="btn btn-secondary" title="Re-embed all records">Reindex</button>
+          </div>
+
+          <!-- Search Results -->
+          <div id="memory-search-results" class="memory-results"></div>
+
+          <!-- Entity List -->
+          <div class="memory-entity-list">
+            <h2>Recent Entities</h2>
+            <div id="memory-entities-list" class="entity-list">
+              <div class="activity-empty">No entities yet. Store something via the API or chat.</div>
+            </div>
+          </div>
+
+          <!-- Add Entity Form -->
+          <details class="memory-add-form">
+            <summary>➕ Add Entity</summary>
+            <div class="form-group">
+              <input type="text" id="entity-name" placeholder="Name (e.g. John Smith)" class="form-input">
+              <select id="entity-type" class="form-input">
+                <option value="person">Person</option>
+                <option value="place">Place</option>
+                <option value="thing">Thing</option>
+                <option value="idea">Idea</option>
+                <option value="event">Event</option>
+                <option value="belief">Belief</option>
+              </select>
+              <input type="text" id="entity-description" placeholder="Description (optional)" class="form-input">
+              <button id="entity-add-btn" class="btn btn-primary">Create Entity</button>
+            </div>
+          </details>
         </div>
 
         <!-- Editor View -->
