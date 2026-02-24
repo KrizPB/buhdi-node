@@ -107,8 +107,28 @@
           </div>
           <form id="chat-form">
             <div class="chat-input-row">
-              <textarea id="chat-input" placeholder="Type a message..." rows="1" autofocus></textarea>
-              <button type="submit" id="chat-send" title="Send">▶</button>
+              <div class="chat-input-wrapper" id="chat-drop-zone">
+                <div id="chat-drop-overlay" class="chat-drop-overlay">Drop file here</div>
+                <div id="chat-pending-file" class="chat-pending-file" style="display:none">
+                  <span id="chat-pending-name"></span>
+                  <button type="button" id="chat-pending-clear" title="Remove">✕</button>
+                </div>
+                <textarea id="chat-input" placeholder="Type a message..." rows="1" autofocus></textarea>
+                <div class="chat-input-actions">
+                  <div class="chat-input-left">
+                    <input type="file" id="chat-file-input" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.md" style="display:none">
+                    <button type="button" id="chat-attach-btn" class="chat-icon-btn" title="Attach file">
+                      <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+                    </button>
+                    <button type="button" id="chat-mic-btn" class="chat-icon-btn" title="Voice input">
+                      <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"/></svg>
+                    </button>
+                  </div>
+                  <button type="submit" id="chat-send" title="Send">
+                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18"/></svg>
+                  </button>
+                </div>
+              </div>
             </div>
           </form>
         </div>
