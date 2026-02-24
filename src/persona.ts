@@ -106,7 +106,8 @@ function readLocalPersona(): { soul: string; systemPrompt: string; tools: string
  */
 async function fetchCloudBootstrap(): Promise<CloudBootstrap | null> {
   const config = loadConfig() as any;
-  const apiKey = config.apiKey || config.memory?.sync?.api_key;
+  // Use the bm_live_ memory API key for cloud bootstrap, not the bnode_ connection key
+  const apiKey = config.memory?.sync?.api_key;
   const cloudUrl = config.memory?.sync?.cloud_url || 'https://www.mybuhdi.com';
 
   if (!apiKey) return null;
@@ -126,13 +127,39 @@ async function fetchCloudBootstrap(): Promise<CloudBootstrap | null> {
     }
 
     const data = await res.json() as any;
+    const d = data.data || data;
+    
+    // Soul can be string or object with customPrompt
+    const soulRaw = d.soul;
+    const soulText = typeof soulRaw === 'string' ? soulRaw 
+      : soulRaw?.customPrompt || JSON.stringify(soulRaw) || '';
+    
+    // Identity can be string or object
+    const identityRaw = d.identity;
+    const identityText = typeof identityRaw === 'string' ? identityRaw
+      : identityRaw ? Object.entries(identityRaw).map(([k, v]) => `${k}: ${v}`).join('\n') : '';
+    
+    // User can be string or object
+    const userRaw = d.user;
+    const userText = typeof userRaw === 'string' ? userRaw
+      : userRaw ? Object.entries(userRaw).filter(([_, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n') : '';
+
+    // Directives can be object with named fields or array
+    const directivesRaw = d.directives;
+    let directivesList: string[] = [];
+    if (Array.isArray(directivesRaw)) {
+      directivesList = directivesRaw;
+    } else if (directivesRaw && typeof directivesRaw === 'object') {
+      directivesList = Object.entries(directivesRaw).map(([k, v]) => `## ${k}\n${v}`);
+    }
+
     const bootstrap: CloudBootstrap = {
-      soul: data.soul || data.data?.soul || '',
-      identity: data.identity || data.data?.identity || '',
-      user: data.user || data.data?.user || '',
-      directives: data.directives || data.data?.directives || [],
-      memory: data.memory || data.data?.memory || {},
-      config: data.config || data.data?.config || {},
+      soul: soulText,
+      identity: identityText,
+      user: userText,
+      directives: directivesList,
+      memory: d.memory || {},
+      config: d.config || {},
       fetchedAt: Date.now(),
     };
 

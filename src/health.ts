@@ -717,7 +717,18 @@ export function startHealthServer(port: number): http.Server | null {
     if (pathname === '/api/memory/status' && req.method === 'GET') {
       try {
         const { getMemoryStatus } = require('./memory');
-        return jsonResponse(res, getMemoryStatus());
+        const { getPersonaInfo } = require('./persona');
+        const memStatus = getMemoryStatus();
+        const persona = getPersonaInfo();
+        const config = require('./config').loadConfig() as any;
+        const cloudMemory = {
+          connected: !!config.memory?.sync?.api_key,
+          cloud_url: config.memory?.sync?.cloud_url || null,
+          sync_enabled: config.memory?.sync?.enabled || false,
+          cloud_cached: persona.cloudCached,
+          last_sync: persona.cloudLastSync || null,
+        };
+        return jsonResponse(res, { ...memStatus, cloud: cloudMemory });
       } catch (err: any) {
         return jsonResponse(res, { error: err.message, state: 'uninitialized' });
       }
