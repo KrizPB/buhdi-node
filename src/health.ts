@@ -225,18 +225,21 @@ export function startHealthServer(port: number): http.Server | null {
           const { message, history } = JSON.parse(body);
           const { llmRouter } = require('./llm');
           const { toolRegistry } = require('./tool-plugins');
-          const { sanitizeHistory, sanitizeToolOutput, validateToolCall, buildSystemPrompt, MAX_TOOL_CALLS_PER_TURN } = require('./llm/safety');
+          const { sanitizeHistory, sanitizeToolOutput, validateToolCall, MAX_TOOL_CALLS_PER_TURN } = require('./llm/safety');
+          const { buildPersonaPrompt } = require('./persona');
 
           // H6-FIX: Sanitize client history (only user/assistant, strip secrets)
           const safeHistory = sanitizeHistory(history);
 
+          const tools = toolRegistry.getLLMToolSchemas();
+          const toolDesc = tools.map((t: any) => `- ${t.function.name}: ${t.function.description}`).join('\n');
+          const systemPrompt = await buildPersonaPrompt(toolDesc);
+
           const messages: any[] = [
-            { role: 'system', content: buildSystemPrompt() },
+            { role: 'system', content: systemPrompt },
             ...safeHistory,
             { role: 'user', content: message },
           ];
-
-          const tools = toolRegistry.getLLMToolSchemas();
 
           const result = await llmRouter.complete({
             messages,
@@ -458,11 +461,30 @@ export function startHealthServer(port: number): http.Server | null {
           let headers: Record<string, string> = { 'Content-Type': 'application/json' };
           let testBody: string;
 
+          // Auto-detect Anthropic: by type, endpoint, or token prefix
+          const isAnthropic = type === 'anthropic' 
+            || input.endpoint?.includes('api.anthropic.com')
+            || input.token?.startsWith('sk-ant-oat');
+
           if (type === 'ollama') {
             testUrl = `${input.endpoint}/api/chat`;
             testBody = JSON.stringify({ model: input.model, messages: [{ role: 'user', content: 'Say "hello" in one word.' }], stream: false });
+          } else if (isAnthropic) {
+            // Anthropic native API — /v1/messages with special headers
+            const endpoint = input.endpoint || 'https://api.anthropic.com';
+            testUrl = `${endpoint}/v1/messages`;
+            headers['anthropic-version'] = '2023-06-01';
+            if (input.token?.startsWith('sk-ant-oat')) {
+              headers['Authorization'] = `Bearer ${input.token}`;
+              headers['anthropic-beta'] = 'claude-code-20250219,oauth-2025-04-20';
+              headers['anthropic-dangerous-direct-browser-access'] = 'true';
+              headers['user-agent'] = 'buhdi-node/1.0 (local, api)';
+            } else if (input.token) {
+              headers['x-api-key'] = input.token;
+            }
+            testBody = JSON.stringify({ model: input.model, max_tokens: 10, messages: [{ role: 'user', content: 'Say "hello" in one word.' }] });
           } else {
-            testUrl = `${input.endpoint}/chat/completions`;
+            testUrl = `${input.endpoint}/v1/chat/completions`;
             if (input.token) {
               const authType = input.authType || 'bearer';
               if (authType === 'bearer') headers['Authorization'] = `Bearer ${input.token}`;
@@ -488,13 +510,70 @@ export function startHealthServer(port: number): http.Server | null {
           const data = await resp.json() as any;
           const content = type === 'ollama'
             ? data?.message?.content
-            : data?.choices?.[0]?.message?.content;
+            : isAnthropic
+              ? data?.content?.[0]?.text
+              : data?.choices?.[0]?.message?.content;
 
           jsonResponse(res, { ok: true, response: content?.substring(0, 100) || 'Connected!', model: data?.model || input.model });
         } catch (err: any) {
           jsonResponse(res, { ok: false, error: err.message });
         }
       });
+    }
+
+    // Persona API
+    if (pathname === '/api/persona' && req.method === 'GET') {
+      const { getPersonaInfo } = require('./persona');
+      return jsonResponse(res, getPersonaInfo());
+    }
+
+    if (pathname === '/api/memory/connect' && req.method === 'POST') {
+      return readBody(req, async (body) => {
+        try {
+          const { api_key } = JSON.parse(body);
+          if (!api_key) return jsonResponse(res, { ok: false, error: 'Missing api_key' }, 400);
+
+          // Validate key against mybuhdi.com
+          const check = await fetch('https://www.mybuhdi.com/api/memory/stats', {
+            headers: { 'Authorization': `Bearer ${api_key}` },
+            signal: AbortSignal.timeout(10000),
+          });
+          if (!check.ok) {
+            return jsonResponse(res, { ok: false, error: `Invalid key (${check.status})` });
+          }
+          const stats = await check.json() as any;
+
+          // Safely merge into config
+          const { loadConfig, saveConfig } = require('./config');
+          const config = loadConfig();
+          if (!config.memory) config.memory = {};
+          config.memory.sync = {
+            enabled: true,
+            cloud_url: 'https://www.mybuhdi.com',
+            api_key,
+            interval_seconds: 300,
+          };
+          saveConfig(config);
+
+          jsonResponse(res, { 
+            ok: true, 
+            entities: stats.data?.entity_count ?? stats.entity_count ?? 0,
+            message: 'Memory connected! Restart node to apply.' 
+          });
+        } catch (err: any) {
+          jsonResponse(res, { ok: false, error: err.message });
+        }
+      });
+    }
+
+    if (pathname === '/api/persona/sync' && req.method === 'POST') {
+      const { syncCloudPersona } = require('./persona');
+      syncCloudPersona().then((result: any) => {
+        jsonResponse(res, result);
+      }).catch((err: any) => {
+        jsonResponse(res, { ok: false, error: err.message }, 500);
+      });
+      return;
     }
 
     if (pathname === '/api/providers/strategy' && req.method === 'POST') {
@@ -1129,14 +1208,18 @@ async function handleWSChat(message: string, history: any[], ws: import('ws').We
     }
 
     const { toolRegistry } = require('./tool-plugins');
-    const { sanitizeHistory, buildSystemPrompt } = require('./llm/safety');
+    const { sanitizeHistory } = require('./llm/safety');
+    const { buildPersonaPrompt } = require('./persona');
     const tools = toolRegistry.getLLMToolSchemas();
 
     // H6-FIX: Sanitize client history
     const safeHistory = sanitizeHistory(history);
 
+    const toolDesc = tools.map((t: any) => `- ${t.function.name}: ${t.function.description}`).join('\n');
+    const systemPrompt = await buildPersonaPrompt(toolDesc);
+
     const messages = [
-      { role: 'system', content: buildSystemPrompt() },
+      { role: 'system', content: systemPrompt },
       ...safeHistory,
       { role: 'user', content: message },
     ];

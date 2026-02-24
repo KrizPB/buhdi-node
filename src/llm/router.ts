@@ -12,9 +12,10 @@ import {
 } from './types';
 import { OllamaProvider } from './providers/ollama';
 import { OpenAICompatProvider } from './providers/openai-compat';
+import { AnthropicProvider } from './providers/anthropic';
 import { addActivity, broadcastToDashboard } from '../health';
 
-type Provider = OllamaProvider | OpenAICompatProvider;
+type Provider = OllamaProvider | OpenAICompatProvider | AnthropicProvider;
 
 /** Default config when none specified */
 const DEFAULT_CONFIG: LLMRouterConfig = {
@@ -70,9 +71,18 @@ export class LLMRouter {
   }
 
   private createProvider(config: LLMProviderConfig): Provider | null {
+    // Check explicit type first, then fall back to name-based detection
+    const type = config.type?.toLowerCase() || config.name?.toLowerCase() || '';
+    
+    if (type === 'ollama') return new OllamaProvider(config);
+    if (type === 'anthropic') return new AnthropicProvider(config);
+    
+    // Name-based detection for backward compat
     switch (config.name) {
       case 'ollama':
         return new OllamaProvider(config);
+      case 'anthropic':
+        return new AnthropicProvider(config);
       case 'lm_studio':
       case 'openai_compat':
       case 'mybuhdi_cloud':
@@ -80,7 +90,10 @@ export class LLMRouter {
       case 'openrouter':
         return new OpenAICompatProvider(config);
       default:
-        // Treat unknown as OpenAI-compatible
+        // Auto-detect: if endpoint is api.anthropic.com or key starts with sk-ant-oat, use Anthropic
+        if (config.endpoint?.includes('api.anthropic.com') || config.apiKey?.startsWith('sk-ant-oat')) {
+          return new AnthropicProvider(config);
+        }
         return new OpenAICompatProvider(config);
     }
   }

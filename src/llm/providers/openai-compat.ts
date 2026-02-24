@@ -61,25 +61,68 @@ export class OpenAICompatProvider {
     try {
       const headers: Record<string, string> = { ...this.authHeaders() };
 
+      // Try /v1/models first (standard OpenAI-compat)
       const res = await fetch(`${this.config.endpoint}/v1/models`, {
         headers,
         signal: AbortSignal.timeout(5000),
       });
 
-      if (!res.ok) {
-        this.health.available = false;
-        this.health.error = `HTTP ${res.status}`;
-        return false;
+      if (res.ok) {
+        const data = await res.json() as any;
+        const models = (data.data || []).map((m: any) => m.id);
+        this.health.models = models;
+        this.health.available = true;
+        this.health.lastCheck = Date.now();
+        this.health.lastLatencyMs = Date.now() - start;
+        this.health.error = undefined;
+        return true;
       }
 
-      const data = await res.json() as any;
-      const models = (data.data || []).map((m: any) => m.id);
-      this.health.models = models;
-      this.health.available = true;
+      // If /v1/models returns 404, try a minimal chat completion (e.g. Anthropic)
+      if (res.status === 404) {
+        return await this.healthCheckViaChatProbe(start);
+      }
+
+      this.health.available = false;
+      this.health.error = `HTTP ${res.status}`;
+      return false;
+    } catch (err: any) {
+      this.health.available = false;
       this.health.lastCheck = Date.now();
       this.health.lastLatencyMs = Date.now() - start;
-      this.health.error = undefined;
-      return true;
+      this.health.error = err.message;
+      return false;
+    }
+  }
+
+  /** Fallback health check: send a tiny chat completion to verify auth & connectivity */
+  private async healthCheckViaChatProbe(start: number): Promise<boolean> {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', ...this.authHeaders() };
+      const res = await fetch(`${this.config.endpoint}/v1/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: this.config.model,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 1,
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (res.ok) {
+        this.health.available = true;
+        this.health.models = [this.config.model];
+        this.health.lastCheck = Date.now();
+        this.health.lastLatencyMs = Date.now() - start;
+        this.health.error = undefined;
+        return true;
+      }
+
+      const errText = await res.text().catch(() => '');
+      this.health.available = false;
+      this.health.error = `${res.status}: ${errText.substring(0, 200)}`;
+      return false;
     } catch (err: any) {
       this.health.available = false;
       this.health.lastCheck = Date.now();

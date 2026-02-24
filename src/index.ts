@@ -31,6 +31,7 @@ Usage:
   buhdi-node status               Show system & connection info
   buhdi-node logs                 Tail recent log files
   buhdi-node --key <API_KEY>      Same as connect
+  buhdi-node memory [API_KEY]      Connect/check cloud memory
   buhdi-node trust [level]         View/set trust level
   buhdi-node pending               List plugins awaiting approval
   buhdi-node plugins              List installed plugins
@@ -124,6 +125,14 @@ async function runConnect(apiKey: string, isDaemon = false): Promise<void> {
     const msg = `✅ Connected as "${connection.name}"`;
     if (isDaemon) getLogger().info(msg); else console.log(msg + '\n');
     scanTools(apiKey).catch(() => {});
+
+    // Initialize persona system
+    import('./persona').then(({ initPersona }) => {
+      initPersona();
+    }).catch((err: any) => {
+      if (isDaemon) getLogger().warn('Persona init error: ' + err.message);
+      else console.warn('⚠️  Persona init:', err.message);
+    });
 
     // Initialize LLM router
     import('./llm').then(({ initLLMRouter }) => {
@@ -411,6 +420,60 @@ async function main(): Promise<void> {
       }
     } catch {
       console.error(`Failed to read secrets for "${pluginName}"`);
+    }
+    process.exit(0);
+  }
+
+  if (cmd === 'memory' && args[1]) {
+    const memoryKey = args[1];
+    console.log(`🐻 Buhdi Node v${VERSION}`);
+    console.log('🧠 Connecting memory to mybuhdi.com...\n');
+
+    // Validate the key
+    try {
+      const res = await fetch('https://www.mybuhdi.com/api/memory/stats', {
+        headers: { 'Authorization': `Bearer ${memoryKey}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) {
+        console.error(`❌ Invalid memory API key (${res.status})`);
+        process.exit(1);
+      }
+      const data = await res.json() as any;
+      console.log(`✅ Connected! Memory stats: ${data.data?.entity_count ?? data.entity_count ?? '?'} entities`);
+    } catch (err: any) {
+      console.error(`❌ Connection failed: ${err.message}`);
+      process.exit(1);
+    }
+
+    // Safely merge into config
+    const config = loadConfig();
+    if (!config.memory) (config as any).memory = {};
+    (config as any).memory.sync = {
+      enabled: true,
+      cloud_url: 'https://www.mybuhdi.com',
+      api_key: memoryKey,
+      interval_seconds: 300,
+    };
+    saveConfig(config);
+    console.log('💾 Memory API key saved to config');
+    console.log('\n🔄 Cloud persona sync will now work in cloud_first mode');
+    console.log('   Edit persona files: ~/.buhdi-node/persona/');
+    console.log('   Restart buhdi-node to apply');
+    process.exit(0);
+  }
+
+  if (cmd === 'memory' && !args[1]) {
+    const config = loadConfig() as any;
+    const syncConfig = config.memory?.sync;
+    if (syncConfig?.api_key) {
+      console.log(`🧠 Memory: connected to ${syncConfig.cloud_url || 'https://www.mybuhdi.com'}`);
+      console.log(`   Sync: ${syncConfig.enabled ? 'enabled' : 'disabled'}`);
+      console.log(`   Interval: ${syncConfig.interval_seconds || 300}s`);
+    } else {
+      console.log('🧠 Memory: not connected');
+      console.log('   Connect with: buhdi-node memory <API_KEY>');
+      console.log('   Get your key at: https://www.mybuhdi.com/settings');
     }
     process.exit(0);
   }
