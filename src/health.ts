@@ -354,6 +354,7 @@ export function startHealthServer(port: number): http.Server | null {
           const { addMessage } = require('./chats');
           const msg = JSON.parse(body);
           if (!msg.role || !msg.content) return jsonResponse(res, { error: 'Missing role or content' }, 400);
+          if (!['user', 'assistant', 'system'].includes(msg.role)) return jsonResponse(res, { error: 'Invalid role' }, 400);
           if (msg.content.length > 50000) return jsonResponse(res, { error: 'Message too long (max 50000)' }, 400);
           msg.ts = msg.ts || new Date().toISOString();
           addMessage(id, msg);
