@@ -13,7 +13,7 @@ import crypto from 'crypto';
 const BASE_URL = 'https://www.mybuhdi.com';
 const WS_URL = 'wss://buhdi-ws.fly.dev/ws';
 const POLL_INTERVAL = 5000;
-const HEARTBEAT_INTERVAL = 30000;
+const HEARTBEAT_INTERVAL = 60000;
 
 // ---- Tool Sync State ----
 let lastToolSyncHash = '';
@@ -95,6 +95,7 @@ export class NodeConnection extends EventEmitter {
   private wsConnected = false;
   private reconnectDelay = BACKOFF_BASE;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private _memorySyncCounter = 0;
   private wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private executor: TaskExecutor | null = null;
@@ -209,10 +210,29 @@ export class NodeConnection extends EventEmitter {
             'x-node-key': this.apiKey,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ node_id: this.nodeId }),
+          body: JSON.stringify({
+            node_id: this.nodeId,
+            dashboard_url: (() => {
+              try {
+                const cfg = loadConfig();
+                const port = cfg.healthPort || 9847;
+                const token = cfg.dashboardToken || '';
+                return token ? `http://localhost:${port}/?token=${token}` : `http://localhost:${port}/`;
+              } catch { return undefined; }
+            })(),
+          }),
         });
         // Sync custom tools to cloud after successful heartbeat
         if (this.nodeId) await syncToolsToCloud(this.apiKey, this.nodeId);
+        // Push dirty memory to cloud every 5th heartbeat (~5 min at 60s interval)
+        if (!this._memorySyncCounter) this._memorySyncCounter = 0;
+        this._memorySyncCounter++;
+        if (this._memorySyncCounter % 5 === 0) {
+          try {
+            const { pushToCloud } = await import('./memory/index');
+            await pushToCloud(BASE_URL, this.apiKey);
+          } catch { /* silent */ }
+        }
       } catch { /* silent */ }
     }, HEARTBEAT_INTERVAL);
   }

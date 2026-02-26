@@ -260,6 +260,81 @@ export function getRelevantContext(query: string, maxTokens = 2000): string {
   return parts.length > 1 ? parts.join('\n\n') : '';
 }
 
+/**
+ * Push dirty (locally modified) entities/facts to cloud for backup.
+ * Called periodically from heartbeat or manually from dashboard.
+ */
+export async function pushToCloud(apiUrl: string, nodeKey: string): Promise<{ synced: number; errors: number }> {
+  if (!initialized) return { synced: 0, errors: 0 };
+
+  const db = getDb();
+  const ownerId = memoryConfig?.owner_id || 'local';
+
+  // Get dirty entities with their facts
+  const dirtyEntities = db.prepare(
+    'SELECT id, name, type, description, updated_at FROM entities WHERE owner_id = ? AND is_dirty = 1 LIMIT 100'
+  ).all(ownerId) as Array<{ id: string; name: string; type: string; description: string; updated_at: string }>;
+
+  if (dirtyEntities.length === 0) return { synced: 0, errors: 0 };
+
+  // Build payload
+  const entities = dirtyEntities.map(ent => {
+    const facts = db.prepare('SELECT key, value, updated_at FROM facts WHERE entity_id = ?')
+      .all(ent.id) as Array<{ key: string; value: string; updated_at: string }>;
+    return {
+      name: ent.name,
+      type: ent.type,
+      description: ent.description,
+      updated_at: ent.updated_at,
+      facts,
+    };
+  });
+
+  // Get dirty relationships
+  const dirtyRels = db.prepare(
+    'SELECT r.relationship_type as type, e1.name as "from", e2.name as "to", r.updated_at FROM relationships r JOIN entities e1 ON r.entity_a_id = e1.id JOIN entities e2 ON r.entity_b_id = e2.id WHERE r.is_dirty = 1 LIMIT 50'
+  ).all() as Array<{ type: string; from: string; to: string; updated_at: string }>;
+
+  try {
+    const res = await fetch(`${apiUrl}/api/memory/sync/push`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-node-key': nodeKey,
+      },
+      body: JSON.stringify({
+        entities,
+        relationships: dirtyRels,
+        sync_cursor: new Date().toISOString(),
+      }),
+    });
+
+    if (!res.ok) {
+      console.warn(`[memory-sync] Push failed: ${res.status}`);
+      return { synced: 0, errors: 1 };
+    }
+
+    const result = await res.json() as { data?: { synced?: number } };
+
+    // Mark synced entities as clean
+    const markClean = db.prepare('UPDATE entities SET is_dirty = 0 WHERE id = ?');
+    const markFactsClean = db.prepare('UPDATE facts SET is_dirty = 0 WHERE entity_id = ?');
+    const markRelsClean = db.prepare('UPDATE relationships SET is_dirty = 0 WHERE is_dirty = 1');
+
+    for (const ent of dirtyEntities) {
+      markClean.run(ent.id);
+      markFactsClean.run(ent.id);
+    }
+    markRelsClean.run();
+
+    console.log(`[memory-sync] Pushed ${result.data?.synced || 0} items to cloud`);
+    return { synced: result.data?.synced || 0, errors: 0 };
+  } catch (err: any) {
+    console.warn(`[memory-sync] Push error: ${err.message}`);
+    return { synced: 0, errors: 1 };
+  }
+}
+
 // Re-export everything for clean imports
 export * from './database';
 export * from './embeddings';

@@ -607,6 +607,30 @@ html, body {
   border-color: var(--accent-border);
 }
 
+/* Message action buttons (copy, TTS) */
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.msg:hover .msg-actions { opacity: 1; }
+.msg-action-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.msg-action-btn:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.msg.msg-user .msg-actions { justify-content: flex-end; }
+
 /* Typing indicator */
 .typing-indicator {
   padding: 8px 24px;

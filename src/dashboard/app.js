@@ -475,6 +475,10 @@
       <div class="msg-body">
         <div class="msg-name">${name} <span class="msg-time">${time}</span></div>
         <div class="msg-content">${rendered}</div>
+        <div class="msg-actions">
+          <button class="msg-action-btn msg-copy-btn" title="Copy message" onclick="copyMessageText(this)">📋</button>
+          ${!isUser ? '<button class="msg-action-btn msg-tts-btn" title="Play as voice" onclick="playMessageTTS(this)">🔊</button>' : ''}
+        </div>
       </div>
     `;
 
@@ -2248,6 +2252,80 @@ DEL  /api/credentials/:tool Remove</code></pre>`,
       <span class="detect-status ${status}">${statusText}</span>
     </div>`;
   }
+
+  // ---- Message Actions: Copy & TTS ----
+
+  window.copyMessageText = function(btn) {
+    const msgContent = btn.closest('.msg-body').querySelector('.msg-content');
+    const text = msgContent.innerText || msgContent.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = '✅';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    }).catch(() => {
+      // Fallback for older browsers
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      const orig = btn.textContent;
+      btn.textContent = '✅';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    });
+  };
+
+  window.playMessageTTS = async function(btn) {
+    const msgContent = btn.closest('.msg-body').querySelector('.msg-content');
+    const text = msgContent.innerText || msgContent.textContent;
+    if (!text.trim()) return;
+
+    // Check if already playing — toggle stop
+    if (btn.dataset.playing === 'true') {
+      window.speechSynthesis?.cancel();
+      if (window._ttsAudio) { window._ttsAudio.pause(); window._ttsAudio = null; }
+      btn.textContent = '🔊';
+      btn.dataset.playing = 'false';
+      return;
+    }
+
+    btn.textContent = '⏹️';
+    btn.dataset.playing = 'true';
+
+    // Try mybuhdi.com TTS first (if API key available)
+    try {
+      const config = await buhdiAPI.status();
+      if (config.apiKey) {
+        const res = await fetch('https://www.mybuhdi.com/api/voice/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.apiKey },
+          body: JSON.stringify({ text: text.slice(0, 5000) }),
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          window._ttsAudio = audio;
+          audio.onended = () => { btn.textContent = '🔊'; btn.dataset.playing = 'false'; URL.revokeObjectURL(url); };
+          audio.onerror = () => { btn.textContent = '🔊'; btn.dataset.playing = 'false'; };
+          audio.play();
+          return;
+        }
+      }
+    } catch { /* fall through to browser TTS */ }
+
+    // Fallback: browser speech synthesis
+    if (window.speechSynthesis) {
+      const utterance = new SpeechSynthesisUtterance(text.slice(0, 3000));
+      utterance.onend = () => { btn.textContent = '🔊'; btn.dataset.playing = 'false'; };
+      utterance.onerror = () => { btn.textContent = '🔊'; btn.dataset.playing = 'false'; };
+      window.speechSynthesis.speak(utterance);
+    } else {
+      btn.textContent = '🔊';
+      btn.dataset.playing = 'false';
+    }
+  };
 
   async function init() {
     // Check for first-run wizard
