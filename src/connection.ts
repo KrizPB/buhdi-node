@@ -7,11 +7,54 @@ import { EventEmitter } from 'events';
 import { PluginManager } from './plugins/manager';
 import { fetchDeployKey, loadDeployKey } from './plugins/signing';
 import { loadConfig } from './config';
+import { detectCapabilities } from './capabilities';
+import crypto from 'crypto';
 
 const BASE_URL = 'https://www.mybuhdi.com';
 const WS_URL = 'wss://buhdi-ws.fly.dev/ws';
 const POLL_INTERVAL = 5000;
 const HEARTBEAT_INTERVAL = 30000;
+
+// ---- Tool Sync State ----
+let lastToolSyncHash = '';
+
+async function syncToolsToCloud(apiKey: string, nodeId: string): Promise<void> {
+  try {
+    const config = loadConfig();
+    const tools = (config as any).customTools || [];
+    if (tools.length === 0) {
+      if (lastToolSyncHash) {
+        // Tools were deleted — sync empty list
+        lastToolSyncHash = '';
+        await fetch(`${BASE_URL}/api/node/tools/sync`, {
+          method: 'POST',
+          headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ node_id: nodeId, tools: [] }),
+        });
+      }
+      return;
+    }
+    const hash = crypto.createHash('md5').update(JSON.stringify(tools.map((t: any) => t.name + t.desc))).digest('hex');
+    if (hash === lastToolSyncHash) return; // No changes
+    const syncPayload = tools.map((t: any) => ({
+      name: t.name,
+      description: t.desc || t.displayName || t.name,
+      category: t.category || 'Custom',
+      credentials_required: t.authType !== 'none',
+    }));
+    const resp = await fetch(`${BASE_URL}/api/node/tools/sync`, {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node_id: nodeId, tools: syncPayload }),
+    });
+    if (resp.ok) lastToolSyncHash = hash;
+  } catch { /* silent — don't break heartbeat */ }
+}
+
+export function triggerToolSync(apiKey: string, nodeId: string): void {
+  lastToolSyncHash = ''; // Force re-sync on next heartbeat
+  syncToolsToCloud(apiKey, nodeId).catch(() => {});
+}
 
 // ---- Connection State Machine ----
 export enum ConnectionState {
@@ -70,6 +113,7 @@ export class NodeConnection extends EventEmitter {
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
   private lastSuccessfulPoll: number = Date.now();
   private startedAt: number = Date.now();
+  private pendingPeerRequests: Map<string, { resolve: (value: any) => void; reject: (reason: any) => void; timeout: NodeJS.Timeout }> = new Map();
 
   constructor(apiKey: string) {
     super();
@@ -167,6 +211,8 @@ export class NodeConnection extends EventEmitter {
           },
           body: JSON.stringify({ node_id: this.nodeId }),
         });
+        // Sync custom tools to cloud after successful heartbeat
+        if (this.nodeId) await syncToolsToCloud(this.apiKey, this.nodeId);
       } catch { /* silent */ }
     }, HEARTBEAT_INTERVAL);
   }
@@ -375,6 +421,48 @@ export class NodeConnection extends EventEmitter {
       case 'CHECK_VERSION':
         this.handleCheckVersion();
         break;
+
+      case 'peer_task': {
+        const PEER_ALLOWED_TYPES = ['shell', 'read_file', 'list_files', 'status', 'screenshot', 'file_read', 'system_info', 'build_webpage'];
+        const { from_node, request_id, task: peerTask } = msg;
+        console.log(`📥 Peer task from ${from_node}: ${peerTask?.type}`);
+        this.lastSuccessfulPoll = Date.now();
+        if (peerTask && !PEER_ALLOWED_TYPES.includes(peerTask.type)) {
+          console.warn(`⚠️ Rejected peer task type: ${peerTask.type}`);
+          this.wsSend({ type: 'peer_result', target_node: from_node, request_id, result: { status: 'failed', error: `Task type '${peerTask.type}' not allowed for peer execution` } });
+          break;
+        }
+        if (this.executor && peerTask) {
+          this.executor.execute({ ...peerTask, id: request_id }).then((result) => {
+            this.wsSend({
+              type: 'peer_result',
+              target_node: from_node,
+              request_id,
+              result,
+            });
+          }).catch((err: any) => {
+            this.wsSend({
+              type: 'peer_result',
+              target_node: from_node,
+              request_id,
+              result: { status: 'failed', error: err.message },
+            });
+          });
+        }
+        break;
+      }
+
+      case 'peer_result': {
+        const { request_id, result } = msg;
+        this.lastSuccessfulPoll = Date.now();
+        const pending = this.pendingPeerRequests.get(request_id);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          this.pendingPeerRequests.delete(request_id);
+          pending.resolve(result);
+        }
+        break;
+      }
 
       default:
         break;
@@ -635,8 +723,13 @@ export class NodeConnection extends EventEmitter {
 
   private startWsHeartbeat(): void {
     this.stopWsHeartbeat();
+    const config = loadConfig();
     this.wsHeartbeatTimer = setInterval(() => {
-      this.wsSend({ type: 'heartbeat' });
+      this.wsSend({
+        type: 'heartbeat',
+        role: config.role || 'any',
+        capabilities: detectCapabilities(),
+      });
     }, HEARTBEAT_INTERVAL);
   }
 
@@ -738,6 +831,24 @@ export class NodeConnection extends EventEmitter {
     console.log(`🐕 Watchdog: uptime=${uptimeMin}m state=${stateStr} lastActivity=${Math.round(sincePoll / 1000)}s ago`);
   }
 
+  async peerExecute(targetNodeName: string, task: any): Promise<any> {
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingPeerRequests.delete(requestId);
+        reject(new Error(`Peer task timeout: ${targetNodeName}`));
+      }, 60000);
+
+      this.pendingPeerRequests.set(requestId, { resolve, reject, timeout });
+      this.wsSend({
+        type: 'peer_task',
+        target_node: targetNodeName,
+        request_id: requestId,
+        task,
+      });
+    });
+  }
+
   stop(): void {
     this.running = false;
     this.stopPolling();
@@ -752,6 +863,13 @@ export class NodeConnection extends EventEmitter {
       this.ws.close();
       this.ws = null;
     }
+    // Clean up pending peer requests
+    for (const [id, pending] of this.pendingPeerRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error('Connection closed'));
+    }
+    this.pendingPeerRequests.clear();
+
     this.setState(ConnectionState.DISCONNECTED);
   }
 

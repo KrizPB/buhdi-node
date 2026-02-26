@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { getDashboardToken } from './dashboard';
+import { triggerToolSync } from './connection';
 
 const VERSION = '0.3.0';
 const startTime = Date.now();
@@ -212,6 +213,8 @@ export function startHealthServer(port: number): http.Server | null {
             (config as any).customTools.push(tool);
           }
           saveConfig(config);
+          // Trigger tool sync to cloud
+          if (_state.nodeId && config.apiKey) triggerToolSync(config.apiKey, _state.nodeId);
           return jsonResponse(res, { tool });
         } catch (e: any) {
           return jsonResponse(res, { error: e.message }, 400);
@@ -226,6 +229,8 @@ export function startHealthServer(port: number): http.Server | null {
       if (!(config as any).customTools) return jsonResponse(res, { error: 'Not found' }, 404);
       (config as any).customTools = (config as any).customTools.filter((t: any) => t.name !== toolName);
       saveConfig(config);
+      // Trigger tool sync to cloud
+      if (_state.nodeId && config.apiKey) triggerToolSync(config.apiKey, _state.nodeId);
       return jsonResponse(res, { ok: true });
     }
 
@@ -1231,7 +1236,7 @@ export function startHealthServer(port: number): http.Server | null {
           if (chatHandler) {
             chatHandler(data.message, ws);
           } else {
-            handleWSChat(data.message, data.history || [], ws);
+            handleWSChat(data.message, data.history || [], ws, data.file || null);
           }
           addActivity('💬', `Chat: "${data.message.substring(0, 50)}"`);
         }
@@ -1295,7 +1300,7 @@ function serveFile(res: http.ServerResponse, filePath: string): void {
 }
 
 // ---- WebSocket Chat → LLM ----
-async function handleWSChat(message: string, history: any[], ws: import('ws').WebSocket): Promise<void> {
+async function handleWSChat(message: string, history: any[], ws: import('ws').WebSocket, file?: { name: string; type: string; data: string } | null): Promise<void> {
   try {
     const { llmRouter } = require('./llm');
     if (!llmRouter.hasAvailableProvider()) {
@@ -1323,10 +1328,34 @@ async function handleWSChat(message: string, history: any[], ws: import('ws').We
     // Pull relevant memory for this specific message
     const memoryContext = getRelevantContext(message, 1500);
 
+    // Build user content — multimodal if file attached
+    let userContent: any = message;
+    if (file && file.data) {
+      // Reject oversized files (max ~4MB decoded = ~5.3MB base64)
+      if (file.data.length > 5 * 1024 * 1024) {
+        userContent = `[File "${file.name}" too large for AI processing (max ~4MB). Please use a smaller file.]\n\n${message}`;
+      } else if (file.type.startsWith('image/')) {
+        // Multimodal: image + text (OpenAI vision format)
+        userContent = [
+          { type: 'text', text: message || 'Describe this image.' },
+          { type: 'image_url', image_url: { url: `data:${file.type};base64,${file.data}` } },
+        ];
+      } else {
+        // Text-based file: decode and prepend as context
+        try {
+          const fileText = Buffer.from(file.data, 'base64').toString('utf-8');
+          const truncated = fileText.length > 8000 ? fileText.slice(0, 8000) + '\n...[truncated]' : fileText;
+          userContent = `[Attached file: ${file.name}]\n\`\`\`\n${truncated}\n\`\`\`\n\n${message}`;
+        } catch {
+          userContent = `[Attached file: ${file.name} — could not read contents]\n\n${message}`;
+        }
+      }
+    }
+
     const messages = [
       { role: 'system', content: systemPrompt + (memoryContext ? '\n\n' + memoryContext : '') },
       ...safeHistory,
-      { role: 'user', content: message },
+      { role: 'user', content: userContent },
     ];
 
     // Stream response

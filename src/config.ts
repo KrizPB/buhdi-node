@@ -26,6 +26,7 @@ export interface BuhdiConfig {
   deployKeyPub?: string;         // cached Ed25519 public key (hex)
   dashboardPort?: number;        // 0 = disabled, default 3847
   dashboardToken?: string;       // auto-generated bearer token for non-local access
+  role?: 'brain' | 'hands' | 'any';  // node role for multi-node orchestration (default: 'any')
   features?: {
     polling?: boolean;
     vault?: boolean;

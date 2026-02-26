@@ -256,14 +256,37 @@
       content: m.content,
     }));
 
-    if (window.buhdiWS.ws?.readyState === WebSocket.OPEN) {
-      window.buhdiWS.send('chat.send', { message: text, history });
+    // Helper to send the chat payload (with optional file)
+    const sendPayload = (fileData) => {
+      const payload = { message: text, history };
+      if (fileData) payload.file = fileData;
+
+      if (window.buhdiWS.ws?.readyState === WebSocket.OPEN) {
+        window.buhdiWS.send('chat.send', payload);
+      } else {
+        window.buhdiAPI.chatSend(text).catch(err => {
+          addChatMessage('system', `Failed to send: ${err.message}`);
+        });
+      }
+      showTyping(true);
+    };
+
+    if (pendingFile) {
+      const file = pendingFile;
+      clearPendingFile();
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result.split(',')[1]; // strip data:...;base64, prefix
+        sendPayload({ name: file.name, type: file.type, data: base64 });
+      };
+      reader.onerror = () => {
+        addChatMessage('system', `Failed to read file: ${file.name}`);
+        sendPayload(null);
+      };
+      reader.readAsDataURL(file);
     } else {
-      window.buhdiAPI.chatSend(text).catch(err => {
-        addChatMessage('system', `Failed to send: ${err.message}`);
-      });
+      sendPayload(null);
     }
-    showTyping(true);
   });
 
   chatInput.addEventListener('input', () => {
