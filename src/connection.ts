@@ -212,6 +212,13 @@ export class NodeConnection extends EventEmitter {
           },
           body: JSON.stringify({
             node_id: this.nodeId,
+            operating_mode: (() => {
+              try {
+                const cfg = loadConfig();
+                // Map config role to operating_mode: brain (local-only), hands (accepts remote commands)
+                return cfg.role || 'brain';
+              } catch { return 'brain'; }
+            })(),
             dashboard_url: (() => {
               try {
                 const cfg = loadConfig();
